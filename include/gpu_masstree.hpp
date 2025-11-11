@@ -334,7 +334,7 @@ struct gpu_masstree {
           } else {
             count += current_node.get_in_range(lower_bound, upper_bound, nullptr);
           }
-          keep_traversing = upper_bound > current_node.get_high_key();
+          keep_traversing = current_node.has_sibling() && upper_bound > current_node.get_high_key();
           if (keep_traversing) {
             current_node_index = current_node.get_sibling_index();
             current_node       = node_type(
@@ -489,7 +489,7 @@ struct gpu_masstree {
                                             const tile_type& tile,
                                             DeviceAllocator& allocator) {
     bool traversed = false;
-    while (key >= node.get_high_key()) {
+    while (node.has_sibling() && key >= node.get_high_key()) {
       node_index = node.get_sibling_index();
       node =
           node_type(reinterpret_cast<key_type*>(allocator.address(allocator_, node_index)), tile);
@@ -508,7 +508,7 @@ struct gpu_masstree {
                                                        const tile_type& tile,
                                                        DeviceAllocator& allocator) {
     bool traversed = false;
-    while (key >= node.get_high_key()) {
+    while (node.has_sibling() && key >= node.get_high_key()) {
       node_index = node.get_sibling_index();
       node_type sibling_node =
           node_type(reinterpret_cast<key_type*>(allocator.address(allocator_, node_index)), tile);
@@ -549,7 +549,7 @@ struct gpu_masstree {
           current_node.load(cuda_memory_order::memory_order_relaxed);
           bool parent_unknown =
               current_node_index == parent_index && current_node_index != root_index;
-          bool traversal_required = key >= current_node.get_high_key();
+          bool traversal_required = current_node.has_sibling() && key >= current_node.get_high_key();
           // if the parent is unknown we will not proceed
           if (parent_unknown && traversal_required) {
             current_node.unlock();
@@ -562,7 +562,7 @@ struct gpu_masstree {
           if (!is_leaf) { current_node.unlock(); }
 
           // traversal while holding the lock
-          while (key >= current_node.get_high_key()) {
+          while (current_node.has_sibling() && key >= current_node.get_high_key()) {
             if (is_leaf) { current_node.unlock(); }
             current_node_index = current_node.get_sibling_index();
             current_node       = node_type(
@@ -599,7 +599,7 @@ struct gpu_masstree {
           current_node.load(cuda_memory_order::memory_order_relaxed);
           is_full = current_node.is_full();
           if (is_full) {
-            bool traversal_required = key >= current_node.get_high_key();
+            bool traversal_required = current_node.has_sibling() && key >= current_node.get_high_key();
             // if we traverse, parent will change so we will restart
             if (traversal_required) {
               current_node.unlock();
@@ -1019,7 +1019,7 @@ struct gpu_masstree {
     uint32_t root_index = *d_root_index_;
     if (tile.thread_rank() == 0) printf("root: %u\n", root_index);
     device_allocator_context_type allocator{allocator_, tile};
-    uint32_t allocated_count = 50;
+    uint32_t allocated_count = 5;
     for (uint32_t index = 0; index < allocated_count; ++index) {
       masstree_node current_node(
         reinterpret_cast<key_type*>(allocator.address(allocator_, index)), tile);
