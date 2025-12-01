@@ -178,22 +178,8 @@ struct masstree_node {
     set_bit_in_metadata<lock_bit_offset_, false>();
   }
 
-  DEVICE_QUALIFIER bool traverse_required(const key_type& key, const bool last_slice, const bool for_find) const {
-    // note last_slice is not used if this is non-leaf
-    if (!has_sibling()) return false;
-    else {
-      auto high_key = get_high_key();
-      if (high_key < key) return true;
-      else if (is_leaf_ && high_key == key && last_slice) {
-        if (for_find) {
-          // check if this node contains (key, last_slice) pair
-          return !key_is_in_node(key, last_slice);
-        }
-        // if for insert, no need to go to the next leaf if the metabit=0 entry exists in this node
-        // because we can just insert after that entry
-      }
-    }
-    return false;
+  DEVICE_QUALIFIER bool traverse_required(const key_type& key) const {
+    return has_sibling() && (get_high_key() < key);
   }
   DEVICE_QUALIFIER int find_next_location(const key_type& key) const {
     assert(!is_leaf_);
@@ -207,9 +193,8 @@ struct masstree_node {
     auto next_location = find_next_location(key);
     return tile_.shfl(lane_elem_, get_value_lane_from_location(next_location));
   }
-  DEVICE_QUALIFIER bool key_is_in_upperhalf(const key_type& key) const {
-    auto pivot_key = get_key_from_location(left_half_width_ - 1);
-    return (key > pivot_key);
+  DEVICE_QUALIFIER bool key_is_in_upperhalf(const key_type& pivot_key, const key_type& key) const {
+    return (pivot_key < key);
   }
 
   DEVICE_QUALIFIER int find_key_location_in_node(const key_type& key, bool last_slice) const {
@@ -236,16 +221,29 @@ struct masstree_node {
     return true;
   }
 
+  DEVICE_QUALIFIER int get_split_left_width() const {
+    // normally, location is left_half_width_
+    // but we should put same-key non-last-slice and first last-slice in the same node
+    // to avoid comparing keys, we just shift if last elem of the left half is non-last-slice
+    bool shift_required = false;
+    if (is_leaf_) {
+      bool key_meta_of_default_pivot = get_key_meta_bit_from_location(left_half_width_ - 1);
+      shift_required = !key_meta_of_default_pivot; // shift if it's non-last-slice
+    }
+    return shift_required ? (left_half_width_ - 1) : left_half_width_;
+  }
+
   DEVICE_QUALIFIER masstree_node do_split(const value_type right_sibling_index,
                                           elem_type* right_sibling_ptr,
+                                          const int left_width,
                                           const bool make_sibling_locked = false) {
     // prepare the upper half in right sibling
-    elem_type right_sibling_elem = tile_.shfl_down(lane_elem_, left_half_width_);
-    bool right_sibling_key_meta_bit = tile_.shfl_down(key_meta_bit_, left_half_width_);
+    elem_type right_sibling_elem = tile_.shfl_down(lane_elem_, left_width);
+    bool right_sibling_key_meta_bit = tile_.shfl_down(key_meta_bit_, left_width);
     
     // distribute num keys
-    uint16_t right_num_keys = num_keys_ - left_half_width_;
-    num_keys_ = left_half_width_;
+    uint16_t right_num_keys = num_keys_ - left_width;
+    num_keys_ = left_width;
 
     // reconnect right sibling pointers
     if (tile_.thread_rank() == sibling_ptr_lane_) {
@@ -273,6 +271,7 @@ struct masstree_node {
   struct split_intermediate_result {
     masstree_node parent;
     masstree_node sibling;
+    key_type pivot_key;
   };
   // Note parent must be locked before this gets called
   DEVICE_QUALIFIER split_intermediate_result split(const value_type right_sibling_index,
@@ -281,16 +280,17 @@ struct masstree_node {
                                                    elem_type* parent_ptr,
                                                    const bool make_sibling_locked = false) {
     // We assume here that the parent is locked
-    auto pivot_key = get_key_from_location(left_half_width_ - 1);
-    auto split_result = do_split(right_sibling_index, right_sibling_ptr, make_sibling_locked);
+    auto left_width = get_split_left_width();
+    auto split_result = do_split(right_sibling_index, right_sibling_ptr, left_width, make_sibling_locked);
 
     // Update parent
     auto parent_node = masstree_node(parent_ptr, parent_index, tile_);
     parent_node.load(cuda_memory_order::memory_order_relaxed);
 
     // update the parent
+    auto pivot_key = get_key_from_location(left_width - 1);
     parent_node.insert_nonleaf(pivot_key, right_sibling_index);
-    return {parent_node, split_result};
+    return {parent_node, split_result, pivot_key};
   }
 
   struct two_nodes_result {
@@ -302,9 +302,6 @@ struct masstree_node {
                                                   elem_type* left_sibling_ptr,
                                                   elem_type* right_sibling_ptr,
                                                   const bool make_children_locked = false) {
-    // Create a new root
-    auto right_node_minimum = get_key_from_location(left_half_width_ - 1);
-
     // Copy the current node into a child
     auto left_child =
         masstree_node(left_sibling_ptr, left_sibling_index, tile_, lane_elem_, 
@@ -313,8 +310,10 @@ struct masstree_node {
     if (is_leaf_) { is_leaf_ = false; }
     // Make new root
     num_keys_ = 2;
+    auto left_width = get_split_left_width();
+    auto pivot_key = get_key_from_location(left_width - 1);
     if (tile_.thread_rank() == get_key_lane_from_location(0)) {
-      lane_elem_ = right_node_minimum;
+      lane_elem_ = pivot_key;
     }
     else if (tile_.thread_rank() == get_value_lane_from_location(0)) {
       lane_elem_ = left_sibling_index;
@@ -330,7 +329,7 @@ struct masstree_node {
 
     // now split the left child
     auto right_child =
-        left_child.do_split(right_sibling_index, right_sibling_ptr, make_children_locked);
+        left_child.do_split(right_sibling_index, right_sibling_ptr, left_width, make_children_locked);
     return {left_child, right_child};
   }
 

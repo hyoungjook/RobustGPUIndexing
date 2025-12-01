@@ -125,11 +125,11 @@ struct gpu_masstree {
             tile);
         if (concurrent) {
           current_node.load(cuda_memory_order::memory_order_relaxed);
+          traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
         }
         else {
           current_node.load();
         }
-        traverse_side_links(current_node, current_node_index, key_slice, last_slice, tile, allocator, true);
         if (current_node.is_leaf()) {
           const bool found = current_node.get_key_value_from_node(key_slice, current_node_index, last_slice);
           if (!found) {
@@ -175,7 +175,7 @@ struct gpu_masstree {
         link_traversed = current_node_index == current_root_index ? false : link_traversed;
 
         // Traversing side-links
-        link_traversed |= traverse_side_links(current_node, current_node_index, key_slice, last_slice, tile, allocator, false);
+        link_traversed |= traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
 
         bool is_leaf = current_node.is_leaf();
         if (is_leaf) {
@@ -183,7 +183,7 @@ struct gpu_masstree {
             current_node.load(cuda_memory_order::memory_order_relaxed);
             bool parent_unknown =
                 current_node_index == parent_index && current_node_index != current_root_index;
-            bool traversal_required = current_node.traverse_required(key_slice, last_slice, false);
+            bool traversal_required = current_node.traverse_required(key_slice);
             // if the parent is unknown we will not proceed
             if (parent_unknown && traversal_required) {
               current_node.unlock();
@@ -195,7 +195,7 @@ struct gpu_masstree {
             // if the node is not a leaf anymore, we don't need the lock
             if (!is_leaf) { current_node.unlock(); }
             // traversal while holding the lock
-            while (current_node.traverse_required(key_slice, last_slice, false)) {
+            while (current_node.traverse_required(key_slice)) {
               if (is_leaf) { current_node.unlock(); }
               current_node_index = current_node.get_sibling_index();
               current_node       = node_type(
@@ -235,7 +235,7 @@ struct gpu_masstree {
             is_full = current_node.is_full();
             if (is_full) {
               // if we traverse, parent will change so we will restart
-              if (current_node.traverse_required(key_slice, last_slice, false)) {
+              if (current_node.traverse_required(key_slice)) {
                 current_node.unlock();
                 current_node_index = current_root_index;
                 parent_index       = current_root_index;
@@ -245,7 +245,7 @@ struct gpu_masstree {
               current_node.unlock();
               // Traversing side-links
               link_traversed |=
-                  traverse_side_links(current_node, current_node_index, key_slice, last_slice, tile, allocator, false);
+                  traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
             }
           } else {
             current_node_index = parent_index;
@@ -291,7 +291,6 @@ struct gpu_masstree {
 
           // now it is safe to split
           auto sibling_index = allocator.allocate(allocator_, 1, tile);
-          auto go_right      = current_node.key_is_in_upperhalf(key_slice);
 
           auto split_result = current_node.split(
               sibling_index,
@@ -307,7 +306,7 @@ struct gpu_masstree {
           split_result.parent.store(cuda_memory_order::memory_order_relaxed);
           split_result.parent.unlock();
 
-          if (go_right) {
+          if (current_node.key_is_in_upperhalf(split_result.pivot_key, key_slice)) {
             current_node_index = sibling_index;
             current_node.unlock();
             current_node = split_result.sibling;
@@ -406,12 +405,10 @@ struct gpu_masstree {
   DEVICE_QUALIFIER bool traverse_side_links(node_type& node,
                                             size_type& node_index,
                                             const key_slice_type& key_slice,
-                                            const bool last_slice,
                                             const tile_type& tile,
-                                            DeviceAllocator& allocator,
-                                            const bool for_find) {
+                                            DeviceAllocator& allocator) {
     bool traversed = false;
-    while (node.traverse_required(key_slice, last_slice, for_find)) {
+    while (node.traverse_required(key_slice)) {
       node_index = node.get_sibling_index();
       node =
           node_type(reinterpret_cast<key_slice_type*>(allocator.address(allocator_, node_index)), node_index, tile);

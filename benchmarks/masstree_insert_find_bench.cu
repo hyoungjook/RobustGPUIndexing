@@ -41,7 +41,7 @@ struct bench_rates {
   float insertion_rate;
   float find_rate;
 };
-template <typename BTree, bool use_masstree>
+template <typename BTree, bool use_masstree, bool fixlen_key>
 bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>& d_keys,
                                           thrust::device_vector<size_type>& d_lengths,
                                           thrust::device_vector<value_type>& d_values,
@@ -63,7 +63,12 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
     gpu_timer insert_timer(insertion_stream);
     insert_timer.start_timer();
     if constexpr (use_masstree) {
-      tree.insert_varlen(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), d_lengths.size(), insertion_stream);
+      if constexpr (fixlen_key) {
+        tree.insert_fixlen(d_keys.data().get(), max_key_length, d_values.data().get(), d_lengths.size(), insertion_stream);
+      }
+      else {
+        tree.insert_varlen(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), d_lengths.size(), insertion_stream);
+      }
     }
     else {
       tree.insert(d_keys.data().get(), d_values.data().get(), d_keys.size(), insertion_stream);
@@ -76,7 +81,12 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
     gpu_timer find_timer(find_stream);
     find_timer.start_timer();
     if constexpr (use_masstree) {
-      tree.find_varlen(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), d_query_lengths.size(), find_stream);
+      if constexpr (fixlen_key) {
+        tree.find_fixlen(d_query_keys.data().get(), max_key_length, d_query_results.data().get(), d_query_lengths.size(), find_stream);
+      }
+      else {
+        tree.find_varlen(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), d_query_lengths.size(), find_stream);
+      }
     }
     else {
       tree.find(d_query_keys.data().get(), d_query_results.data().get(), d_query_keys.size(), find_stream);
@@ -194,14 +204,21 @@ int main(int argc, char** argv) {
 
   {
     std::cout << "Benchmarking masstree_slab_type" << std::endl;
-    bench_masstree_insertion_find<masstree_slab_type, true>(
+    bench_masstree_insertion_find<masstree_slab_type, true, false>(
+      d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+      max_key_length, num_experiments
+    );
+  }
+  if (min_key_length == max_key_length) {
+    std::cout << "Benchmarking masstree_slab_type with fixlen keys" << std::endl;
+    bench_masstree_insertion_find<masstree_slab_type, true, true>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
       max_key_length, num_experiments
     );
   }
   if (max_key_length == 1) {
     std::cout << "Benchmarking blink_tree_slab_type" << std::endl;
-    bench_masstree_insertion_find<blink_tree_slab_type, false>(
+    bench_masstree_insertion_find<blink_tree_slab_type, false, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
       max_key_length, num_experiments
     );
