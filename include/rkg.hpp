@@ -105,12 +105,6 @@ inline void generate_varlen_keys(std::vector<key_slice_type>& keys,
                                  rng_type& rng,
                                  const distribution_type dist,
                                  const float common_prefix_ratio = 0.1f) {
-  auto reverse_endian = [](uint32_t num) -> uint32_t {
-    return ((num & 0xFF000000) >> 24) |
-           ((num & 0x00FF0000) >> 8)  |
-           ((num & 0x0000FF00) << 8)  |
-           ((num & 0x000000FF) << 24);
-  };
   keys = std::vector<key_slice_type>(num_keys * max_key_length, 0);
   key_lengths = std::vector<size_type>(num_keys, 0);
   auto base_keys = generate_keys<key_slice_type>(num_keys, rng, dist);
@@ -121,7 +115,7 @@ inline void generate_varlen_keys(std::vector<key_slice_type>& keys,
     uint32_t prefix_denominator = 1;
     for (uint32_t s = 0; s < length; s++) {
       uint32_t keylen_idx = length - 1 - s;
-      keys[i * max_key_length + keylen_idx] = reverse_endian(base_keys[i] / prefix_denominator);
+      keys[i * max_key_length + keylen_idx] = base_keys[i] / prefix_denominator;
       prefix_denominator = (float)prefix_denominator / common_prefix_ratio;
       prefix_denominator = std::min<uint32_t>(prefix_denominator, num_keys);
     }

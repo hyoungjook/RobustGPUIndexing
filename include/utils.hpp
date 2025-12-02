@@ -39,16 +39,6 @@ DEVICE_QUALIFIER int bfind(uint64_t src) {
 }
 };  // namespace bits
 
-namespace bytes {
-// Byte order swapping (little endian <-> big endian)
-DEVICE_QUALIFIER uint32_t bswap(uint32_t src) {
-  return __nv_bswap32(src);
-}
-DEVICE_QUALIFIER uint64_t bswap(uint64_t src) {
-  return __nv_bswap64(src);
-}
-};
-
 struct device_memory_usage_results {
   std::size_t used_bytes;
   std::size_t total_bytes;

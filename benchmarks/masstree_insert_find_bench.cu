@@ -53,7 +53,8 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
                                           uint32_t num_keys,
                                           uint32_t max_key_length,
                                           std::size_t num_experiments,
-                                          bool validate_result = false) {
+                                          bool validate_result = false,
+                                          bool validate_tree = false) {
   cudaStream_t insertion_stream{0};
   cudaStream_t find_stream{0};
   float average_insertion_seconds(0.0f);
@@ -115,6 +116,11 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
         std::cout << "validation failed: " << matching_count << "/" << num_keys << " matches" << std::endl;
       }
     }
+    if (validate_tree) {
+      if constexpr (use_masstree) {
+        tree.validate_tree();
+      }
+    }
   }
 
   average_insertion_seconds /= float(num_experiments);
@@ -141,7 +147,10 @@ int main(int argc, char** argv) {
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
+  bool test_fixlen = get_arg_value<bool>(arguments, "test-fixlen").value_or(false);
+  bool test_blink = get_arg_value<bool>(arguments, "test-blink").value_or(false);
   bool validate_result   = get_arg_value<bool>(arguments, "validate-result").value_or(false);
+  bool validate_tree   = get_arg_value<bool>(arguments, "validate-tree").value_or(false);
   std::size_t num_experiments =
       get_arg_value<std::size_t>(arguments, "num-experiments").value_or(1llu);
   if (min_key_length > max_key_length) {
@@ -235,21 +244,21 @@ int main(int argc, char** argv) {
     std::cout << "Benchmarking masstree_slab_type" << std::endl;
     bench_masstree_insertion_find<masstree_slab_type, true, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-      num_keys, max_key_length, num_experiments, validate_result
+      num_keys, max_key_length, num_experiments, validate_result, validate_tree
     );
   }
-  if (min_key_length == max_key_length) {
+  if (test_fixlen && min_key_length == max_key_length) {
     std::cout << "Benchmarking masstree_slab_type with fixlen keys" << std::endl;
     bench_masstree_insertion_find<masstree_slab_type, true, true>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-      num_keys, max_key_length, num_experiments, validate_result
+      num_keys, max_key_length, num_experiments, validate_result, validate_tree
     );
   }
-  if (max_key_length == 1) {
+  if (test_blink && max_key_length == 1) {
     std::cout << "Benchmarking blink_tree_slab_type" << std::endl;
     bench_masstree_insertion_find<blink_tree_slab_type, false, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-      num_keys, max_key_length, num_experiments, validate_result
+      num_keys, max_key_length, num_experiments, validate_result, validate_tree
     );
   }
 }

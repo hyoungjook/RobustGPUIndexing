@@ -218,6 +218,17 @@ TYPED_TEST_SUITE(BTreeMapTest, Implementations);
 }*/
 
 template <typename btree>
+void validate_key_fixlen(btree* tree, uint32_t key_length_bytes) {
+  const size_type key_length = key_length_bytes / sizeof(key_slice_type);
+  testing_input_fixlen input(num_keys, key_length);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  tree->insert_fixlen(input.keys.data(), key_length, input.values.data(), num_keys);
+  cuda_try(cudaDeviceSynchronize());
+  tree->validate_tree();
+  input.free();
+}
+
+template <typename btree>
 void test_exist_key_fixlen(btree* tree, uint32_t key_length_bytes) {
   const size_type key_length = key_length_bytes / sizeof(key_slice_type);
   mapped_vector<value_type> find_results(num_keys);
@@ -257,11 +268,17 @@ void test_notexist_key_fixlen(btree* tree, uint32_t key_length_bytes) {
   input.free();
 }
 
+TYPED_TEST(BTreeMapTest, ValidateKey4) {
+  validate_key_fixlen(this->btree_map_, 4);
+}
 TYPED_TEST(BTreeMapTest, FindExistKey4) {
   test_exist_key_fixlen(this->btree_map_, 4);
 }
 TYPED_TEST(BTreeMapTest, FindNotExist4) {
   test_notexist_key_fixlen(this->btree_map_, 4);
+}
+TYPED_TEST(BTreeMapTest, ValidateKey8) {
+  validate_key_fixlen(this->btree_map_, 8);
 }
 TYPED_TEST(BTreeMapTest, FindExistKey8) {
   test_exist_key_fixlen(this->btree_map_, 8);
@@ -269,11 +286,25 @@ TYPED_TEST(BTreeMapTest, FindExistKey8) {
 TYPED_TEST(BTreeMapTest, FindNotExist8) {
   test_notexist_key_fixlen(this->btree_map_, 8);
 }
+TYPED_TEST(BTreeMapTest, ValidateKey64) {
+  validate_key_fixlen(this->btree_map_, 64);
+}
 TYPED_TEST(BTreeMapTest, FindExistKey64) {
   test_exist_key_fixlen(this->btree_map_, 64);
 }
 TYPED_TEST(BTreeMapTest, FindNotExist64) {
   test_notexist_key_fixlen(this->btree_map_, 64);
+}
+
+template <typename btree>
+void validate_key_varlen(btree* tree, uint32_t max_key_length_bytes) {
+  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
+  testing_input_varlen input(num_keys, max_key_length);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  tree->insert_varlen(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+  cuda_try(cudaDeviceSynchronize());
+  tree->validate_tree();
+  input.free();
 }
 
 template <typename btree>
@@ -296,8 +327,14 @@ void test_exist_key_varlen(btree* tree, uint32_t max_key_length_bytes) {
   input.free();
 }
 
+TYPED_TEST(BTreeMapTest, ValidateKeyVarLen8) {
+  validate_key_varlen(this->btree_map_, 8);
+}
 TYPED_TEST(BTreeMapTest, FindExistKeyVarLen8) {
   test_exist_key_varlen(this->btree_map_, 8);
+}
+TYPED_TEST(BTreeMapTest, ValidateKeyVarLen64) {
+  validate_key_varlen(this->btree_map_, 64);
 }
 TYPED_TEST(BTreeMapTest, FindExistKeyVarLen64) {
   test_exist_key_varlen(this->btree_map_, 64);

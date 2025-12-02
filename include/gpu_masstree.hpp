@@ -116,7 +116,7 @@ struct gpu_masstree {
     using node_type = masstree_node<tile_type>;
     size_type current_node_index = *d_root_index_;
     for (size_type slice = 0; slice < key_length; slice++) {
-      const key_slice_type key_slice = utils::bytes::bswap(key[slice]);
+      const key_slice_type key_slice = key[slice];
       const bool last_slice = (slice == key_length - 1);
       while (true) {
         node_type current_node = node_type(
@@ -160,7 +160,7 @@ struct gpu_masstree {
     size_type current_root_index = *d_root_index_;
     bool link_traversed = false;
     for (size_type slice = 0; slice < key_length; slice++) {
-      const key_slice_type key_slice = utils::bytes::bswap(key[slice]);
+      const key_slice_type key_slice = key[slice];
       const bool last_slice = (slice == key_length - 1);
       size_type current_node_index = current_root_index;
       size_type parent_index = current_root_index;
@@ -387,23 +387,136 @@ struct gpu_masstree {
     return false;
   }
 
-  template <typename tile_type>
-  DEVICE_QUALIFIER void print_tree_nodes_device_func(const tile_type& tile) {
+  template <typename T, int MAX_SIZE>
+  struct traversal_stack {
+    DEVICE_QUALIFIER traversal_stack(T* shared_stack, T* shared_meta)
+      : stack_(shared_stack), meta_(shared_meta), size_(0) {}
+    DEVICE_QUALIFIER bool empty() { return size_ == 0; }
+    DEVICE_QUALIFIER bool full() { return size_ == MAX_SIZE; }
+    DEVICE_QUALIFIER void push(T value, T metadata) {
+      assert(size_ < MAX_SIZE);
+      stack_[size_] = value;
+      meta_[size_] = metadata;
+      size_++;
+      __syncthreads();
+    }
+    DEVICE_QUALIFIER T top() {
+      assert(size_ > 0);
+      return stack_[size_ - 1];
+    }
+    DEVICE_QUALIFIER T& top_metadata() {
+      assert(size_ > 0);
+      return meta_[size_ - 1];
+    }
+    DEVICE_QUALIFIER void pop() {
+      assert(size_ > 0);
+      size_--;
+    }
+    T* stack_;
+    T* meta_;
+    uint32_t size_;
+  };
+
+  template <int MAX_STACK_SIZE, typename tile_type, typename Func>
+  DEVICE_QUALIFIER void cooperative_traverse_tree_nodes(uint32_t* shared_stack,
+                                                        uint32_t* shared_metadata,
+                                                        const tile_type& tile,
+                                                        Func& task) {
+    // debug-purpose, so inefficient implementation
+    // called with single warp, BFS
     using node_type         = masstree_node<tile_type>;
-    uint32_t root_index = *d_root_index_;
-    if (tile.thread_rank() == 0) printf("root: %u\n", root_index);
     device_allocator_context_type allocator{allocator_, tile};
-    uint32_t allocated_count = 20;
-    for (uint32_t index = 0; index < allocated_count; ++index) {
-      masstree_node current_node(
-        reinterpret_cast<key_slice_type*>(allocator.address(allocator_, index)), index, tile);
-      current_node.load(cuda_memory_order::memory_order_seq_cst);
-      current_node.print();
+    // stack: stores node indexes. metadata: # of traversed children
+    traversal_stack<uint32_t, MAX_STACK_SIZE> stack(shared_stack, shared_metadata);
+    stack.push(*d_root_index_, 0);
+    while (!stack.empty()) {
+      uint32_t current_node_index = stack.top();
+      uint32_t num_traversed_children = stack.top_metadata();
+      node_type current_node = node_type(
+          reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
+          current_node_index,
+          tile);
+      current_node.load();
+      if (num_traversed_children == 0) {
+        // first time visiting
+        task.exec(current_node);
+      }
+      if (current_node.num_keys() == num_traversed_children) {
+        // done traversing this node
+        stack.pop();
+      }
+      else {
+        // num_traversed_children++
+        stack.top_metadata()++;
+        if ((!current_node.is_leaf()) ||
+            (!current_node.get_key_meta_bit_from_location(num_traversed_children))) {
+          // If it's a non-leaf node, push the next node
+          // If it's a leaf node but non-last-slice entry, push the next layer root
+          stack.push(current_node.get_value_from_location(num_traversed_children), 0);
+        }
+      }
     }
   }
 
+  struct print_node_task {
+    DEVICE_QUALIFIER void init(bool lead_lane) {}
+    template <typename node_type>
+    DEVICE_QUALIFIER void exec(const node_type& node) {
+      node.print();
+    }
+    DEVICE_QUALIFIER void fini() {}
+  };
   void print_tree_nodes() {
-    print_tree_nodes_kernel<<<1, 32>>>(*this);
+    std::cout << "===== masstree.print_tree_nodes =====" << std::endl;
+    traverse_tree_nodes_kernel<200, print_node_task><<<1, 32>>>(*this);
+    cudaDeviceSynchronize();
+  }
+
+  struct validate_tree_task {
+    DEVICE_QUALIFIER void init(bool lead_lane) {
+      lead_lane_ = lead_lane;
+      num_entries_ = 0;
+      num_nodes_ = 0;
+    }
+    template <typename node_type>
+    DEVICE_QUALIFIER void exec(const node_type& node) {
+      uint32_t num_entries = 0;
+      if (node.is_leaf()) {
+        uint16_t num_keys = node.num_keys();
+        key_slice_type before_key = 0;
+        bool before_key_meta = false;
+        for (uint16_t i = 0; i < num_keys; i++) {
+          auto key = node.get_key_from_location(i);
+          auto key_meta = node.get_key_meta_bit_from_location(i);
+          if (i > 0) {
+            assert(before_key <= key);
+            if (before_key == key) {
+              assert(
+                (before_key_meta == false && key_meta == true) ||
+                (before_key_meta == true && key_meta == true)
+              );
+            }
+          }
+          before_key = key;
+          before_key_meta = key_meta;
+          if (node.get_key_meta_bit_from_location(i)) {
+            num_entries++;
+          }
+        }
+      }
+      num_entries_ += num_entries;
+      num_nodes_++;
+    }
+    DEVICE_QUALIFIER void fini() {
+      if (lead_lane_) {
+        printf("%lu entries, %lu nodes found\n", num_entries_, num_nodes_);
+      }
+    }
+    bool lead_lane_;
+    uint64_t num_entries_, num_nodes_;
+  };
+  void validate_tree() {
+    traverse_tree_nodes_kernel<200, validate_tree_task><<<1, 32>>>(*this);
     cudaDeviceSynchronize();
   }
 

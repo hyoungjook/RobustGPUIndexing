@@ -104,6 +104,7 @@ struct masstree_node {
     return node_width <= tile_.thread_rank() && tile_.thread_rank() < node_width + num_keys_;
   }
 
+  DEVICE_QUALIFIER uint16_t num_keys() const { return num_keys_; }
   DEVICE_QUALIFIER bool is_leaf() const { return is_leaf_; }
   DEVICE_QUALIFIER bool is_intermediate() const { return !is_leaf_; }
   DEVICE_QUALIFIER bool is_full() const {
@@ -464,7 +465,7 @@ struct masstree_node {
   DEVICE_QUALIFIER void print() const {
     #ifdef NODE_DEBUG
     bool lead_lane = (tile_.thread_rank() == 0);
-    if (lead_lane) printf("node[%u](%p): {", node_index_, node_ptr_);
+    if (lead_lane) printf("node[%u]: {", node_index_);
     if (num_keys_ > max_num_keys_) {
       if (lead_lane) printf("num_keys too large: skip}\n");
       return;
@@ -478,12 +479,17 @@ struct masstree_node {
       elem_type key = tile_.shfl(lane_elem_, get_key_lane_from_location(i));
       elem_type value = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
       bool key_meta_bit = tile_.shfl(key_meta_bit_, get_key_lane_from_location(i));
-      if (lead_lane) printf("(%u %u %d) ", key, value, key_meta_bit);
+      if (lead_lane) printf("(%u %u %s) ", key, value, key_meta_bit ? "$" : ":");
     }
-    if (lead_lane) printf("%s %s ", is_locked_ ? "lckd" : "free", is_leaf_ ? "leaf" : "intr");
+    if (lead_lane) printf("%s %s ", is_locked_ ? "locked" : "unlocked", is_leaf_ ? "leaf" : "nonleaf");
     elem_type sibling_key = get_high_key();
     elem_type sibling_index = get_sibling_index();
-    if (has_sibling() && lead_lane) printf("rsbl(%u %u)", sibling_key, sibling_index);
+    if (has_sibling()) {
+      if (lead_lane) printf("next(%u %u)", sibling_key, sibling_index);
+    }
+    else {
+      if (lead_lane) printf("nullnext");
+    }
     if (lead_lane) printf("}\n");
     #endif
   }
@@ -536,9 +542,16 @@ struct masstree_node {
   bool key_meta_bit_; // per-lane value. only threads0-14's values are meaningful
 };
 
-template <typename btree>
-__global__ void print_tree_nodes_kernel(btree tree) {
+template <int MAX_STACK_SIZE, typename Func, typename BTree>
+__global__ void traverse_tree_nodes_kernel(BTree tree) {
+  // called with single warp, BFS
+  assert(gridDim.x == 1 && gridDim.y == 1 && gridDim.z == 1);
+  assert(blockDim.x == 32 && blockDim.y == 1 && blockDim.z == 1);
   auto block = cooperative_groups::this_thread_block();
-  auto tile  = cooperative_groups::tiled_partition<btree::cg_tile_size>(block);
-  tree.print_tree_nodes_device_func(tile);
+  auto tile  = cooperative_groups::tiled_partition<BTree::cg_tile_size>(block);
+  __shared__ uint32_t stack[MAX_STACK_SIZE], metadata[MAX_STACK_SIZE];
+  Func task;
+  task.init(tile.thread_rank() == 0);
+  tree.cooperative_traverse_tree_nodes<MAX_STACK_SIZE>(&stack[0], &metadata[0], tile, task);
+  task.fini();
 }
