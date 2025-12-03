@@ -413,6 +413,50 @@ struct gpu_masstree {
     return false;
   }
 
+  template <typename tile_type>
+  DEVICE_QUALIFIER void cooperative_debug_find_varlen_print(
+      const key_slice_type* key, const size_type key_length, tile_type& tile) {
+    using node_type = masstree_node<tile_type>;
+    device_allocator_context_type allocator{allocator_, tile};
+    size_type current_node_index = *d_root_index_;
+    bool lead_lane = tile.thread_rank() == 0;
+    if (lead_lane) printf("coop find print\n");
+    for (size_type slice = 0; slice < key_length; slice++) {
+      const key_slice_type key_slice = key[slice];
+      const bool last_slice = (slice == key_length - 1);
+      if (lead_lane) printf("key[%u]: %u%s\n", slice, key_slice, last_slice ? " (last)" : "");
+      while (true) {
+        node_type current_node = node_type(
+            reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
+            current_node_index,
+            tile);
+        current_node.load(cuda_memory_order::memory_order_seq_cst);
+        current_node.print();
+        if (current_node.is_leaf()) {
+          const bool found = current_node.get_key_value_from_node(key_slice, current_node_index, last_slice);
+          if (!found) {
+            // not exists
+            if (lead_lane) printf("value not found, exit\n");
+            return;
+          }
+          else {
+            // value retrieved in current_node_index. continue to next layer.
+            if (lead_lane) printf("move to next layer\n");
+            break;
+          }
+        }
+        else {
+          current_node_index = current_node.find_next(key_slice);
+          if (lead_lane) printf("proceed to next node in layer\n");
+        }
+      }
+    }
+  }
+
+  void debug_find_varlen_print(key_slice_type* key, size_type* length) {
+    debug_find_varlen_print_kernel<<<1, 32>>>(*this, key, length);
+  }
+
   template <typename T, int MAX_SIZE>
   struct traversal_stack {
     DEVICE_QUALIFIER traversal_stack(T* shared_stack, T* shared_meta)

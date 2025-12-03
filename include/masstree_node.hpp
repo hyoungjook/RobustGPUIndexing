@@ -238,6 +238,12 @@ struct masstree_node {
                                           elem_type* right_sibling_ptr,
                                           const int left_width,
                                           const bool make_sibling_locked = false) {
+    // same-key non-last-slice entry and first last-slice entry (if both exist) go to the same node
+    //assert(!(
+    //  is_leaf_ &&
+    //  (get_key_from_location(left_width - 1) == get_key_from_location(left_width)) &&
+    //  (get_key_meta_bit_from_location(left_width - 1) == false)
+    //));
     // prepare the upper half in right sibling
     elem_type right_sibling_elem = tile_.shfl_down(lane_elem_, left_width);
     bool right_sibling_key_meta_bit = tile_.shfl_down(key_meta_bit_, left_width);
@@ -311,8 +317,8 @@ struct masstree_node {
     if (is_leaf_) { is_leaf_ = false; }
     // Make new root
     num_keys_ = 2;
-    auto left_width = get_split_left_width();
-    auto pivot_key = get_key_from_location(left_width - 1);
+    auto left_width = left_child.get_split_left_width();
+    auto pivot_key = left_child.get_key_from_location(left_width - 1);
     if (tile_.thread_rank() == get_key_lane_from_location(0)) {
       lane_elem_ = pivot_key;
     }
@@ -514,4 +520,11 @@ __global__ void traverse_tree_nodes_kernel(BTree tree) {
   task.init(tile.thread_rank() == 0);
   tree.cooperative_traverse_tree_nodes<MAX_STACK_SIZE>(&stack[0], &metadata[0], tile, task);
   task.fini();
+}
+
+template <typename BTree>
+__global__ void debug_find_varlen_print_kernel(BTree tree, uint32_t* key, uint32_t* len) {
+  auto block = cooperative_groups::this_thread_block();
+  auto tile  = cooperative_groups::tiled_partition<BTree::cg_tile_size>(block);
+  tree.cooperative_debug_find_varlen_print(key, len[0], tile);
 }

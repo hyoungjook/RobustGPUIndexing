@@ -114,6 +114,24 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
       }
       else {
         std::cout << "validation failed: " << matching_count << "/" << num_keys << " matches" << std::endl;
+        /*if constexpr (use_masstree && !fixlen_key) {
+          std::cout << "=====" << std::endl;
+          tree.validate_tree();
+          std::cout << "=====" << std::endl;
+          auto h_values = thrust::host_vector<value_type>(d_values);
+          auto h_result = thrust::host_vector<value_type>(d_query_results);
+          for (uint32_t i = 0; i < num_keys; i++) {
+            if (h_values[i] != h_result[i]) {
+              std::cout << "debug find for key[" << i << "]: " << h_values[i] << " vs. " << h_result[i] << std::endl;
+              tree.debug_find_varlen_print(
+                d_query_keys.data().get() + (max_key_length * i), 
+                d_query_lengths.data().get() + i
+              );
+              cuda_try(cudaDeviceSynchronize());
+              exit(0);
+            }
+          }
+        }*/
       }
     }
     if (validate_tree) {
@@ -176,6 +194,7 @@ int main(int argc, char** argv) {
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
   std::random_device rd;
+  //std::mt19937 rng(0);
   std::mt19937 rng(rd());
 
   // device vectors
