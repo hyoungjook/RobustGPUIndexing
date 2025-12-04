@@ -44,6 +44,7 @@ struct masstree_node {
                                  const tile_type& tile,
                                  const elem_type elem,
                                  const uint32_t metadata,
+                                 const uint32_t num_keys,
                                  bool is_locked)
       : node_ptr_(ptr)
       #ifdef NODE_DEBUG
@@ -51,7 +52,8 @@ struct masstree_node {
       #endif
       , lane_elem_(elem)
       , tile_(tile)
-      , metadata_(metadata) {
+      , metadata_(metadata)
+      , num_keys_(num_keys) {
     set_metadata_bit<lock_bit_mask_>(metadata_, is_locked);
   }
 
@@ -65,6 +67,7 @@ struct masstree_node {
     //  key_meta_bits = 0
     metadata_ = 0;
     set_metadata_bit<leaf_bit_mask_, true>(metadata_);
+    num_keys_ = 0;
     write_metadata_to_registers();
   }
 
@@ -74,6 +77,28 @@ struct masstree_node {
   }
   DEVICE_QUALIFIER void store(cuda_memory_order order = cuda_memory_order::memory_order_weak) {
     cuda_memory<elem_type>::store(node_ptr_ + tile_.thread_rank(), lane_elem_, order);
+  }
+
+  DEVICE_QUALIFIER void read_metadata_from_registers() {
+    metadata_ = tile_.shfl(lane_elem_, metadata_lane_);
+    // get per-lane value
+    assert((metadata_ & key_meta_reserved_bit_mask_) == 0);
+    metadata_ |= (((metadata_ >> (tile_.thread_rank())) & 1u) << key_meta_reserved_bit_offset_);
+    // num_keys shortcut
+    num_keys_ = (metadata_ & num_keys_mask_) >> num_keys_offset_;
+  }
+  DEVICE_QUALIFIER void write_metadata_to_registers() {
+    metadata_ &= ~(num_keys_mask_ | key_meta_bits_mask_);
+    // apply num_keys shortcut
+    metadata_ |= (num_keys_ << num_keys_offset_);
+    // key_meta_bit_ @ threads 15-31 will be overwritten by other metadata bits.
+    uint32_t key_meta_bits = (tile_.ballot(get_this_lane_key_meta_bit()) & key_meta_bits_mask_);
+    metadata_ |= key_meta_bits;
+    if (tile_.thread_rank() == metadata_lane_) {
+      // also unset the key_meta reserved bit to zero
+      metadata_ &= ~key_meta_reserved_bit_mask_;
+      lane_elem_ = metadata_;
+    }
   }
 
   DEVICE_QUALIFIER int get_key_lane_from_location(const int location) const {
@@ -95,31 +120,28 @@ struct masstree_node {
     return tile_.shfl(get_this_lane_key_meta_bit(), get_key_lane_from_location(location));
   }
   DEVICE_QUALIFIER bool is_valid_key_lane() const {
-    return tile_.thread_rank() < num_keys();
+    return tile_.thread_rank() < num_keys_;
   }
   DEVICE_QUALIFIER bool is_valid_value_lane() const {
     // intermediate node has children one more than keys
-    return node_width <= tile_.thread_rank() && tile_.thread_rank() < node_width + num_keys();
+    return node_width <= tile_.thread_rank() && tile_.thread_rank() < node_width + num_keys_;
   }
 
-  DEVICE_QUALIFIER uint16_t num_keys() const {
-    return static_cast<uint16_t>((metadata_ & num_keys_mask_) >> num_keys_offset_);
+  DEVICE_QUALIFIER uint32_t num_keys() const {
+    return num_keys_;
   }
   DEVICE_QUALIFIER bool is_leaf() const {
     return (metadata_ & leaf_bit_mask_) != 0;
   }
   DEVICE_QUALIFIER bool is_full() const {
-    assert(num_keys() <= max_num_keys_);
-    return (num_keys() == max_num_keys_);
+    assert(num_keys_ <= max_num_keys_);
+    return (num_keys_ == max_num_keys_);
   }
   DEVICE_QUALIFIER bool has_sibling() const {
     return (metadata_ & sibling_bit_mask_) != 0;
   }
   DEVICE_QUALIFIER bool get_this_lane_key_meta_bit() const {
     return (metadata_ & key_meta_reserved_bit_mask_) != 0;
-  }
-  DEVICE_QUALIFIER void set_num_keys(uint32_t& metadata, uint16_t num_keys) {
-    metadata = (metadata & ~num_keys_mask_) | (num_keys << num_keys_offset_);
   }
   template <uint32_t mask, bool bit>
   DEVICE_QUALIFIER void set_metadata_bit(uint32_t& metadata) {
@@ -132,28 +154,13 @@ struct masstree_node {
     else { metadata &= ~mask; }
   }
   DEVICE_QUALIFIER key_type get_high_key() const {
-    assert(num_keys() > 0); // never called
-    return tile_.shfl(lane_elem_, num_keys() - 1);
+    assert(num_keys_ > 0); // never called
+    return tile_.shfl(lane_elem_, num_keys_ - 1);
   }
   DEVICE_QUALIFIER value_type get_sibling_index() const {
     return tile_.shfl(lane_elem_, sibling_ptr_lane_);
   }
 
-  DEVICE_QUALIFIER void read_metadata_from_registers() {
-    metadata_ = tile_.shfl(lane_elem_, metadata_lane_);
-    // get per-lane value
-    uint32_t per_lane_key_meta_bit = (metadata_ >> (tile_.thread_rank())) & 1u;
-    metadata_ = (metadata_ & ~key_meta_reserved_bit_mask_) |
-                (per_lane_key_meta_bit << key_meta_reserved_bit_offset_);
-  }
-  DEVICE_QUALIFIER void write_metadata_to_registers() {
-    // key_meta_bit_ @ threads 15-31 will be overwritten by other metadata bits.
-    metadata_ = (metadata_ & ~key_meta_bits_mask_) |
-                (tile_.ballot(get_this_lane_key_meta_bit()) & key_meta_bits_mask_);
-    if (tile_.thread_rank() == metadata_lane_) {
-      lane_elem_ = metadata_;
-    }
-  }
   DEVICE_QUALIFIER bool is_locked() const {
     return (metadata_ & lock_bit_mask_) != 0;
   }
@@ -198,7 +205,7 @@ struct masstree_node {
     const bool key_less_equal = is_valid_key_lane() && (key <= lane_elem_);
     uint32_t key_less_equal_bitmap = tile_.ballot(key_less_equal);
     auto next_location = __ffs(key_less_equal_bitmap) - 1;
-    assert(0 <= next_location && next_location < num_keys() + 1);
+    assert(0 <= next_location && next_location < num_keys_ + 1);
     return next_location;
   }
   DEVICE_QUALIFIER value_type find_next(const key_type& key) const {
@@ -257,14 +264,11 @@ struct masstree_node {
     //  (get_key_from_location(left_width - 1) == get_key_from_location(left_width)) &&
     //  (get_key_meta_bit_from_location(left_width - 1) == false)
     //));
+    assert(is_full());
     // prepare the upper half in right sibling
     elem_type right_sibling_elem = tile_.shfl_down(lane_elem_, left_width);
     // metadata shfl required for key_meta_reserved bit
     uint32_t right_sibling_metadata = tile_.shfl_down(metadata_, left_width);
-    
-    // distribute num keys
-    set_num_keys(right_sibling_metadata, num_keys() - left_width);
-    set_num_keys(metadata_, left_width);
 
     // reconnect right sibling pointers
     if (tile_.thread_rank() == sibling_ptr_lane_) {
@@ -279,7 +283,8 @@ struct masstree_node {
     // create right sibling node
     masstree_node right_sibling_node =
         masstree_node(right_sibling_ptr, right_sibling_index, tile_, right_sibling_elem, 
-                      right_sibling_metadata, make_sibling_locked);
+                      right_sibling_metadata, max_num_keys_ - left_width, make_sibling_locked);
+    num_keys_ = left_width;
 
     // flush metadata
     write_metadata_to_registers();
@@ -325,11 +330,11 @@ struct masstree_node {
     // Copy the current node into a child
     auto left_child =
         masstree_node(left_sibling_ptr, left_sibling_index, tile_, lane_elem_,
-                      metadata_, make_children_locked);
+                      metadata_, num_keys_, make_children_locked);
     // if the root was a leaf, now it should be intermediate
     set_metadata_bit<leaf_bit_mask_, false>(metadata_);
     // Make new root
-    set_num_keys(metadata_, 2);
+    num_keys_ = 2;
     auto left_width = left_child.get_split_left_width();
     auto pivot_key = left_child.get_key_from_location(left_width - 1);
     if (tile_.thread_rank() == get_key_lane_from_location(0)) {
@@ -355,7 +360,7 @@ struct masstree_node {
 
   DEVICE_QUALIFIER void do_insert(const key_type& key, const value_type& value, bool last_slice, const size_type& key_location) {
     // shuffle the keys and do the insertion
-    set_num_keys(metadata_, num_keys() + 1);
+    num_keys_++;
     const int key_lane = get_key_lane_from_location(key_location);
     const int value_lane = get_value_lane_from_location(key_location + (is_leaf() ? 0 : 1));
     auto up_elem = tile_.shfl_up(lane_elem_, 1);
@@ -435,6 +440,7 @@ struct masstree_node {
     #endif
     lane_elem_ = other.lane_elem_;
     metadata_ = other.metadata_;
+    num_keys_ = other.num_keys_;
     return *this;
   }
 
@@ -442,17 +448,16 @@ struct masstree_node {
     #ifdef NODE_DEBUG
     bool lead_lane = (tile_.thread_rank() == 0);
     if (lead_lane) printf("node[%u]: {", node_index_);
-    auto _num_keys = num_keys();
-    if (_num_keys > max_num_keys_) {
+    if (num_keys_ > max_num_keys_) {
       if (lead_lane) printf("num_keys too large: skip}\n");
       return;
     } 
-    if (_num_keys == 0) {
+    if (num_keys_ == 0) {
       if (lead_lane) printf("empty}\n");
       return;
     }
-    if (lead_lane) printf("%u ", _num_keys);
-    for (size_type i = 0; i < _num_keys; ++i) {
+    if (lead_lane) printf("%u ", num_keys_);
+    for (size_type i = 0; i < num_keys_; ++i) {
       elem_type key = tile_.shfl(lane_elem_, get_key_lane_from_location(i));
       elem_type value = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
       bool key_meta_bit = tile_.shfl(get_this_lane_key_meta_bit(), get_key_lane_from_location(i));
@@ -516,12 +521,7 @@ struct masstree_node {
   static constexpr uint32_t left_half_width_ = (max_num_keys_ + 1) / 2;
 
   uint32_t metadata_;
-
-  /*uint16_t num_keys_;
-  bool is_locked_;
-  bool is_leaf_;
-  bool has_sibling_;
-  bool key_meta_bit_; // per-lane value. only threads0-14's values are meaningful*/
+  uint32_t num_keys_;
 };
 
 template <int MAX_STACK_SIZE, typename Func, typename BTree>
