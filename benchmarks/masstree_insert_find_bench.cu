@@ -69,12 +69,7 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
     gpu_timer insert_timer(insertion_stream);
     insert_timer.start_timer();
     if constexpr (use_masstree) {
-      if constexpr (fixlen_key) {
-        tree.insert_fixlen(d_keys.data().get(), max_key_length, d_values.data().get(), num_keys, insertion_stream);
-      }
-      else {
-        tree.insert_varlen(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream);
-      }
+      tree.insert(d_keys.data().get(), max_key_length, fixlen_key ? nullptr : d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream);
     }
     else {
       tree.insert(d_keys.data().get(), d_values.data().get(), num_keys, insertion_stream);
@@ -87,12 +82,7 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
     gpu_timer find_timer(find_stream);
     find_timer.start_timer();
     if constexpr (use_masstree) {
-      if constexpr (fixlen_key) {
-        tree.find_fixlen(d_query_keys.data().get(), max_key_length, d_query_results.data().get(), num_keys, find_stream);
-      }
-      else {
-        tree.find_varlen(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys, find_stream);
-      }
+      tree.find(d_query_keys.data().get(), max_key_length, fixlen_key ? nullptr : d_query_lengths.data().get(), d_query_results.data().get(), num_keys, find_stream);
     }
     else {
       tree.find(d_query_keys.data().get(), d_query_results.data().get(), num_keys, find_stream);

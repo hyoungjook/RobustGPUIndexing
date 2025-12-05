@@ -62,48 +62,28 @@ struct gpu_masstree {
   ~gpu_masstree() {}
 
   // host-side APIs
-  void insert_fixlen(const key_slice_type* keys,
-                     const size_type key_length,
-                     const value_type* values,
-                     const size_type num_keys,
-                     cudaStream_t stream = 0) {
+  // if key_lengths == NULL, we use max_key_length as a fixed length
+  void insert(const key_slice_type* keys,
+              const size_type max_key_length,
+              const size_type* key_lengths,
+              const value_type* values,
+              const size_type num_keys,
+              cudaStream_t stream = 0) {
     const uint32_t block_size = 512;
     const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    kernels::insert_fixlen_kernel<<<num_blocks, block_size, 0, stream>>>(keys, key_length, values, num_keys, *this);
+    kernels::masstree_insert_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, values, num_keys, *this);
   }
 
-  void find_fixlen(const key_slice_type* keys,
-                   const size_type key_length,
-                   value_type* values,
-                   const size_type num_keys,
-                   cudaStream_t stream = 0,
-                   bool concurrent = false) {
+  void find(const key_slice_type* keys,
+            const size_type max_key_length,
+            const size_type* key_lengths,
+            value_type* values,
+            const size_type num_keys,
+            cudaStream_t stream = 0,
+            bool concurrent = false) {
     const uint32_t block_size = 512;
     const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    kernels::find_fixlen_kernel<<<num_blocks, block_size, 0, stream>>>(keys, key_length, values, num_keys, *this, concurrent);
-  }
-
-  void insert_varlen(const key_slice_type* keys,
-                     const size_type max_key_length,
-                     const size_type* key_lengths,
-                     const value_type* values,
-                     const size_type num_keys,
-                     cudaStream_t stream = 0) {
-    const uint32_t block_size = 512;
-    const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    kernels::insert_varlen_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, values, num_keys, *this);
-  }
-
-  void find_varlen(const key_slice_type* keys,
-                   const size_type max_key_length,
-                   const size_type* key_lengths,
-                   value_type* values,
-                   const size_type num_keys,
-                   cudaStream_t stream = 0,
-                   bool concurrent = false) {
-    const uint32_t block_size = 512;
-    const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    kernels::find_varlen_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, values, num_keys, *this, concurrent);
+    kernels::masstree_find_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, values, num_keys, *this, concurrent);
   }
 
   // device-side APIs
@@ -132,14 +112,8 @@ struct gpu_masstree {
         }
         if (current_node.is_leaf()) {
           const bool found = current_node.get_key_value_from_node(key_slice, current_node_index, last_slice);
-          if (!found) {
-            // not exists
-            return invalid_value;
-          }
-          else {
-            // value retrieved in current_node_index. continue to next layer.
-            break;
-          }
+          if (!found) return invalid_value; // not exists
+          else break; // value in current_node_index. continue to next layer.
         }
         else {
           current_node_index = current_node.find_next(key_slice);
@@ -647,36 +621,22 @@ struct gpu_masstree {
   friend __global__ void kernels::initialize_kernel(btree);
 
   template <typename key_slice_type, typename value_type, typename size_type, typename btree>
-  friend __global__ void kernels::insert_fixlen_kernel(const key_slice_type* keys,
-                                                       const size_type key_length,
-                                                       const value_type* values,
+  friend __global__ void kernels::masstree_insert_kernel(const key_slice_type* keys,
+                                                         const size_type max_key_length,
+                                                         const size_type* key_lengths,
+                                                         const value_type* values,
+                                                         const size_type keys_count,
+                                                         btree tree);
+
+  template <typename key_slice_type, typename value_type, typename size_type, typename btree>
+  friend __global__ void kernels::masstree_find_kernel(const key_slice_type* keys,
+                                                       const size_type max_key_length,
+                                                       const size_type* key_lengths,
+                                                       value_type* values,
                                                        const size_type keys_count,
-                                                       btree tree);
+                                                       btree tree,
+                                                       bool concurrent);
 
-  template <typename key_slice_type, typename value_type, typename size_type, typename btree>
-  friend __global__ void kernels::find_fixlen_kernel(const key_slice_type* keys,
-                                                     const size_type key_length,
-                                                     value_type* values,
-                                                     const size_type keys_count,
-                                                     btree tree,
-                                                     bool concurrent);
-
-  template <typename key_slice_type, typename value_type, typename size_type, typename btree>
-  friend __global__ void kernels::insert_varlen_kernel(const key_slice_type* keys,
-                                              const size_type max_key_length,
-                                              const size_type* key_lengths,
-                                              const value_type* values,
-                                              const size_type keys_count,
-                                              btree tree);
-
-  template <typename key_slice_type, typename value_type, typename size_type, typename btree>
-  friend __global__ void kernels::find_varlen_kernel(const key_slice_type* keys,
-                                            const size_type max_key_length,
-                                            const size_type* key_lengths,
-                                            value_type* values,
-                                            const size_type keys_count,
-                                            btree tree,
-                                            bool concurrent);
 }; // struct gpu_masstree
 
 } // namespace GPUBTree

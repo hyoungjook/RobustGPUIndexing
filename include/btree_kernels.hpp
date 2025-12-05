@@ -1101,12 +1101,12 @@ __global__ void find_fixlen_kernel(const key_slice_type* keys,
 }
 
 template <typename key_slice_type, typename value_type, typename size_type, typename btree>
-__global__ void insert_varlen_kernel(const key_slice_type* keys,
-                                     const size_type max_key_length,
-                                     const size_type* key_lengths,
-                                     const value_type* values,
-                                     const size_type keys_count,
-                                     btree tree) {
+__global__ void masstree_insert_kernel(const key_slice_type* keys,
+                                       const size_type max_key_length,
+                                       const size_type* key_lengths,
+                                       const value_type* values,
+                                       const size_type keys_count,
+                                       btree tree) {
   auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
   auto block = cg::this_thread_block();
   auto tile = cg::tiled_partition<btree::cg_tile_size>(block);
@@ -1119,7 +1119,7 @@ __global__ void insert_varlen_kernel(const key_slice_type* keys,
   bool to_insert = false;
   if (thread_id < keys_count) {
     key = &keys[max_key_length * thread_id];
-    key_length = key_lengths[thread_id];
+    key_length = key_lengths ? key_lengths[thread_id] : max_key_length;
     value = values[thread_id];
     to_insert = true;
   }
@@ -1143,13 +1143,13 @@ __global__ void insert_varlen_kernel(const key_slice_type* keys,
 }
 
 template <typename key_slice_type, typename value_type, typename size_type, typename btree>
-__global__ void find_varlen_kernel(const key_slice_type* keys,
-                                   const size_type max_key_length,
-                                   const size_type* key_lengths,
-                                   value_type* values,
-                                   const size_type keys_count,
-                                   btree tree,
-                                   bool concurrent) {
+__global__ void masstree_find_kernel(const key_slice_type* keys,
+                                     const size_type max_key_length,
+                                     const size_type* key_lengths,
+                                     value_type* values,
+                                     const size_type keys_count,
+                                     btree tree,
+                                     bool concurrent) {
   auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
   auto block = cg::this_thread_block();
   auto tile = cg::tiled_partition<btree::cg_tile_size>(block);
@@ -1162,7 +1162,7 @@ __global__ void find_varlen_kernel(const key_slice_type* keys,
   bool to_find = false;
   if (thread_id < keys_count) {
     key = &keys[max_key_length * thread_id];
-    key_length = key_lengths[thread_id];
+    key_length = key_lengths ? key_lengths[thread_id] : max_key_length;
     to_find = true;
   }
   using allocator_type = typename btree::device_allocator_context_type;

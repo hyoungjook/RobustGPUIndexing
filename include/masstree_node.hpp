@@ -345,7 +345,7 @@ struct masstree_node {
 
   DEVICE_QUALIFIER void do_insert(const key_type& key, const value_type& value, bool last_slice, const size_type& key_location) {
     // shuffle the keys and do the insertion
-    ++num_keys_;
+    num_keys_++;
     const int key_lane = get_key_lane_from_location(key_location);
     const int value_lane = get_value_lane_from_location(key_location + (is_leaf_ ? 0 : 1));
     auto up_elem = tile_.shfl_up(lane_elem_, 1);
@@ -389,32 +389,32 @@ struct masstree_node {
     do_insert(key, value, last_slice_and_leaf, key_location);
   }
 
-  /*DEVICE_QUALIFIER bool erase(const key_type& key) {
-    // check if key exists
-    auto key_location = find_key_location_in_node(key);
-    if (key_location) {
-      assert(num_keys_ > 0);
-      --num_keys_;
-      const int key_lane = get_key_lane_from_location(key_location);
-      const int value_lane = get_value_lane_from_location(key_location);
-      auto down_elem = tile_.shfl_down(lane_elem_, 1);
-      bool down_ptr_meta_bit = tile_.shfl_down(ptr_meta_bit_, 1);
-      if (is_valid_key_lane()) {
-        if (tile_.thread_rank() >= key_lane) { lane_elem_ = down_elem; }
+  DEVICE_QUALIFIER bool erase(const key_type& key) {
+    // erase entry (key, last_slice=true)
+    assert(is_leaf());
+    uint32_t key_exists = match_key_in_node(key, true);
+    if (key_exists == 0) return false;
+    uint32_t key_location = __ffs(key_exists) - 1;
+    assert(num_keys_ > 0);
+    num_keys_--;
+    const int key_lane = get_key_lane_from_location(key_location);
+    const int value_lane = get_value_lane_from_location(key_location);
+    auto down_elem = tile_.shfl_down(lane_elem_, 1);
+    bool down_key_meta_bit = tile_.shfl_down(key_meta_bit_, 1);
+    if (is_valid_key_lane()) {
+      if (tile_.thread_rank() >= key_lane) {
+        lane_elem_ = down_elem;
+        key_meta_bit_ = down_key_meta_bit;
       }
-      else if (is_valid_value_lane()) {
-        if (tile_.thread_rank() >= value_lane) {
-          lane_elem_ = down_elem;
-          ptr_meta_bit_ = down_ptr_meta_bit;
-        }
+    }
+    else if (is_valid_value_lane()) {
+      if (tile_.thread_rank() >= value_lane) {
+        lane_elem_ = down_elem;
       }
-      write_metadata_to_registers();
-      return true;
     }
-    else {
-      return false;
-    }
-  }*/
+    write_metadata_to_registers();
+    return true;
+  }
 
   DEVICE_QUALIFIER masstree_node<tile_type>& operator=(
       const masstree_node<tile_type>& other) {
