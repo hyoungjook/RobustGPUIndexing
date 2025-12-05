@@ -159,6 +159,7 @@ int main(int argc, char** argv) {
   bool test_blink = get_arg_value<bool>(arguments, "test-blink").value_or(false);
   bool validate_result   = get_arg_value<bool>(arguments, "validate-result").value_or(false);
   bool validate_tree   = get_arg_value<bool>(arguments, "validate-tree").value_or(false);
+  std::string dataset_file = get_arg_value<std::string>(arguments, "dataset-file").value_or("");
   std::size_t num_experiments =
       get_arg_value<std::size_t>(arguments, "num-experiments").value_or(1llu);
   if (min_key_length > max_key_length) {
@@ -183,9 +184,26 @@ int main(int argc, char** argv) {
   std::cout << "Generating input...\n";
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
-  std::random_device rd;
-  //std::mt19937 rng(0);
-  std::mt19937 rng(rd());
+  std::vector<std::string> dataset;
+  if (dataset_file != "") {
+    // parse dataset
+    uint32_t min_length, max_length;
+    dataset = rkg::parse_dataset_file<key_slice_type>(dataset_file, min_length, max_length);
+    std::cout << "Parsed dataset " << dataset_file << ", " <<
+        "found " << dataset.size() << " keys " <<
+        "with key length in [" << min_length << ", " << max_length << "]" << std::endl;
+    if (num_keys > dataset.size()) {
+      std::cout << "Dataset is smaller than the givne num_keys. Using the full dataset..." << std::endl;
+      num_keys = dataset.size();
+    }
+    if (min_key_length > min_length) {
+      std::cout << "Dataset has keys smaller than the given min_key_length. Ignoring the parameter..." << std::endl;
+    }
+    if (max_key_length > max_length) {
+      std::cout << "All keys in the dataset is smaller than the givne max_key_length. Not trimming keys..." << std::endl;
+      max_key_length = max_length;
+    }
+  }
 
   // device vectors
   auto d_keys      = thrust::device_vector<key_slice_type>(num_keys * max_key_length, 0);
@@ -198,9 +216,17 @@ int main(int argc, char** argv) {
   // host vectors
   std::vector<key_slice_type> h_keys;
   std::vector<size_type> h_lengths;
-  rkg::generate_varlen_keys<key_slice_type, size_type>(
-    h_keys, h_lengths, num_keys, min_key_length, max_key_length, rng, rkg::distribution_type::unique_random,
-    common_prefix_ratio);
+  if (dataset_file != "") {
+    rkg::generate_varlen_keys_from_dataset(dataset, h_keys, h_lengths, num_keys, max_key_length);
+  }
+  else {
+    std::random_device rd;
+    //std::mt19937 rng(0);
+    std::mt19937 rng(rd());
+    rkg::generate_varlen_keys<key_slice_type, size_type>(
+      h_keys, h_lengths, num_keys, min_key_length, max_key_length, rng, rkg::distribution_type::unique_random,
+      common_prefix_ratio);
+  }
 
   // copy to device
   d_keys = h_keys;
@@ -256,7 +282,7 @@ int main(int argc, char** argv) {
       num_keys, max_key_length, num_experiments, validate_result, validate_tree
     );
   }
-  if (test_fixlen && min_key_length == max_key_length) {
+  if (test_fixlen && dataset_file == "" && min_key_length == max_key_length) {
     std::cout << "Benchmarking masstree_slab_type with fixlen keys" << std::endl;
     bench_masstree_insertion_find<masstree_slab_type, true, true>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
