@@ -110,7 +110,7 @@ struct gpu_masstree {
         else {
           current_node.load();
         }
-        if (current_node.is_leaf()) {
+        if (current_node.is_border()) {
           const bool found = current_node.get_key_value_from_node(key_slice, current_node_index, last_slice);
           if (!found) return invalid_value; // not exists
           else break; // value in current_node_index. continue to next layer.
@@ -151,8 +151,8 @@ struct gpu_masstree {
         // Traversing side-links
         link_traversed |= traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
 
-        bool is_leaf = current_node.is_leaf();
-        if (is_leaf) {
+        bool is_border = current_node.is_border();
+        if (is_border) {
           // If it's not last slice, first check if the entry exists without lock
           if (!last_slice) {
             size_type next_root_index;
@@ -175,22 +175,22 @@ struct gpu_masstree {
               parent_index       = current_root_index;
               continue;
             }
-            is_leaf = current_node.is_leaf();
+            is_border = current_node.is_border();
             // if the node is not a leaf anymore, we don't need the lock
-            if (!is_leaf) { current_node.unlock(); }
+            if (!is_border) { current_node.unlock(); }
             // traversal while holding the lock
             while (current_node.traverse_required(key_slice)) {
-              if (is_leaf) { current_node.unlock(); }
+              if (is_border) { current_node.unlock(); }
               current_node_index = current_node.get_sibling_index();
               current_node       = node_type(
                   reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
                   current_node_index,
                   tile);
-              if (is_leaf) { current_node.lock(); }
+              if (is_border) { current_node.lock(); }
               current_node.load(cuda_memory_order::memory_order_relaxed);
-              is_leaf = current_node.is_leaf();
+              is_border = current_node.is_border();
               // if the node is not a leaf anymore, we don't need the lock
-              if (!is_leaf) { current_node.unlock(); }
+              if (!is_border) { current_node.unlock(); }
               link_traversed = true;
             }
           }
@@ -204,7 +204,7 @@ struct gpu_masstree {
         // we only know the parent if we didn't do side-traversal
         bool is_full = current_node.is_full();
         if (is_full && link_traversed) {
-          if (is_leaf) {
+          if (is_border) {
             current_node.unlock();
             current_node_index = current_root_index;
             parent_index       = current_root_index;
@@ -213,7 +213,7 @@ struct gpu_masstree {
         }
 
         // if is full, and not leaf we need to acquire the lock
-        if (is_full && !is_leaf) {
+        if (is_full && !is_border) {
           if (current_node.try_lock()) {
             current_node.load(cuda_memory_order::memory_order_relaxed);
             is_full = current_node.is_full();
@@ -298,8 +298,8 @@ struct gpu_masstree {
             split_result.sibling.unlock();
           }
 
-          is_leaf = current_node.is_leaf();
-          if (!is_leaf) { current_node.unlock(); }
+          is_border = current_node.is_border();
+          if (!is_border) { current_node.unlock(); }
         } else if (is_full) {
           auto sibling_index0 = allocator.allocate(allocator_, 1, tile);
           auto sibling_index1 = allocator.allocate(allocator_, 1, tile);
@@ -331,13 +331,13 @@ struct gpu_masstree {
             current_node = two_siblings.right;
           }
           parent_index = current_root_index;
-          is_leaf      = current_node.is_leaf();
-          if (!is_leaf) { current_node.unlock(); }
+          is_border      = current_node.is_border();
+          if (!is_border) { current_node.unlock(); }
         }
 
         // traversal and insertion
-        is_leaf = current_node.is_leaf();
-        if (is_leaf) {
+        is_border = current_node.is_border();
+        if (is_border) {
           value_type value_to_insert;
           if (!last_slice) {
             value_type next_root_index;
@@ -406,7 +406,7 @@ struct gpu_masstree {
             tile);
         current_node.load(cuda_memory_order::memory_order_seq_cst);
         current_node.print();
-        if (current_node.is_leaf()) {
+        if (current_node.is_border()) {
           const bool found = current_node.get_key_value_from_node(key_slice, current_node_index, last_slice);
           if (!found) {
             // not exists
@@ -492,8 +492,8 @@ struct gpu_masstree {
       else {
         // num_traversed_children++
         stack.top_metadata()++;
-        if ((!current_node.is_leaf()) ||
-            (!current_node.get_key_meta_bit_from_location(num_traversed_children))) {
+        if ((!current_node.is_border()) ||
+            (!current_node.get_key_end_bit_from_location(num_traversed_children))) {
           // If it's a non-leaf node, push the next node
           // If it's a leaf node but non-last-slice entry, push the next layer root
           stack.push(current_node.get_value_from_location(num_traversed_children), 0);
@@ -525,25 +525,25 @@ struct gpu_masstree {
     template <typename node_type>
     DEVICE_QUALIFIER void exec(const node_type& node) {
       uint32_t num_entries = 0;
-      if (node.is_leaf()) {
+      if (node.is_border()) {
         uint16_t num_keys = node.num_keys();
         key_slice_type before_key = 0;
-        bool before_key_meta = false;
+        bool before_key_end_bit = false;
         for (uint16_t i = 0; i < num_keys; i++) {
           auto key = node.get_key_from_location(i);
-          auto key_meta = node.get_key_meta_bit_from_location(i);
+          auto key_end_bit = node.get_key_end_bit_from_location(i);
           if (i > 0) {
             assert(before_key <= key);
             if (before_key == key) {
               assert(
-                (before_key_meta == false && key_meta == true) ||
-                (before_key_meta == true && key_meta == true)
+                (before_key_end_bit == false && key_end_bit == true) ||
+                (before_key_end_bit == true && key_end_bit == true)
               );
             }
           }
           before_key = key;
-          before_key_meta = key_meta;
-          if (node.get_key_meta_bit_from_location(i)) {
+          before_key_end_bit = key_end_bit;
+          if (node.get_key_end_bit_from_location(i)) {
             num_entries++;
           }
         }
