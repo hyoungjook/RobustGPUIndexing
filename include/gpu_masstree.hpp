@@ -638,11 +638,20 @@ struct gpu_masstree {
           parent_node.lock();
           parent_node.load(cuda_memory_order::memory_order_relaxed);
 
-          // make sure parent is not underflow and is correct parent
-          auto plan = parent_node.get_merge_plan(current_node_index);
+          // make sure parent is not garbage and not underflow
           if ((parent_node.is_garbage()) ||
-              (parent_node.is_underflow() && parent_index != current_root_index) ||
-              (plan.left_location < 0) ||
+              (parent_node.is_underflow() && parent_index != current_root_index)) {
+            current_node.unlock();
+            sibling_node.unlock();
+            parent_node.unlock();
+            current_node_index = current_root_index;
+            parent_index = current_root_index;
+            sibling_index = current_root_index;
+            continue;
+          }
+          // make sure parent is correct parent for both children
+          auto plan = parent_node.get_merge_plan(current_node_index);
+          if ((plan.left_location < 0) ||
               (plan.sibling_index != sibling_index)) {
             current_node.unlock();
             sibling_node.unlock();
