@@ -711,16 +711,25 @@ struct gpu_masstree {
             else {
               // borrow_right need additional node to ensure correct lock-free traversal
               auto new_sibling_index = allocator.allocate(allocator_, 1, tile);
+              auto new_sibling_node = node_type(
+                  reinterpret_cast<elem_type*>(allocator.address(allocator_, new_sibling_index)),
+                  new_sibling_index,
+                  tile);
               current_node.borrow_right(sibling_node,
                                         parent_node,
                                         plan.left_location,
+                                        current_node_index,
                                         new_sibling_index,
-                                        reinterpret_cast<elem_type*>(allocator.address(allocator_, new_sibling_index)));
-              sibling_node.store(cuda_memory_order::memory_order_relaxed);
+                                        new_sibling_node);
+              new_sibling_node.store(cuda_memory_order::memory_order_relaxed);
               __threadfence();
               current_node.store(cuda_memory_order::memory_order_relaxed);
               __threadfence();
+              sibling_node.store(cuda_memory_order::memory_order_relaxed);
+              __threadfence();
               parent_node.store(cuda_memory_order::memory_order_relaxed);
+              new_sibling_node.unlock();
+              // TODO mark sibling_node to be garbage collected
             }
             parent_node.unlock();
             sibling_node.unlock();

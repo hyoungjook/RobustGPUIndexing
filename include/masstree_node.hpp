@@ -560,8 +560,9 @@ struct masstree_node {
   DEVICE_QUALIFIER void borrow_right(masstree_node& sibling_node,
                                      masstree_node& parent_node,
                                      int left_location,
+                                     const value_type& current_node_index,
                                      const value_type& new_sibling_index,
-                                     elem_type* new_sibling_ptr) {
+                                     masstree_node& new_sibling_node) {
     // compute num shift; adjust similar to get_split_left_width()
     uint32_t num_shift = (sibling_node.num_keys_ - num_keys_) / 2;
     if (is_border_) {
@@ -585,21 +586,32 @@ struct masstree_node {
       }
     }
     write_metadata_to_registers();
-    // remove first num_shift entries from the sibling
-    shifted_elem = tile_.shfl_down(sibling_node.lane_elem_, num_shift);
-    shifted_key_end_bit = is_border_ ? tile_.shfl_down(sibling_node.key_end_bit_, num_shift) : false;
-    sibling_node.num_keys_ -= num_shift;
-    if ((tile_.thread_rank() < sibling_node.num_keys_) ||
-        (node_width <= tile_.thread_rank() && tile_.thread_rank() < node_width + sibling_node.num_keys_)) {
-      sibling_node.lane_elem_ = shifted_elem;
-      sibling_node.key_end_bit_ = shifted_key_end_bit;
-    }
-    sibling_node.write_metadata_to_registers();
-    // reconnect new_sibling
-    sibling_node.node_ptr_ = new_sibling_ptr;
+    // current points to the new sibling
     if (tile_.thread_rank() == sibling_ptr_lane_) {
       lane_elem_ = new_sibling_index;
     }
+    // copy sibling to new_sibling
+    new_sibling_node = masstree_node(new_sibling_node.node_ptr_,
+                                     new_sibling_node.node_index_,
+                                     new_sibling_node.tile_,
+                                     sibling_node.lane_elem_,
+                                     sibling_node.num_keys_,
+                                     sibling_node.is_locked_,
+                                     sibling_node.is_border_,
+                                     sibling_node.sibling_act_,
+                                     sibling_node.key_end_bit_);
+    // remove first num_shift entries from the new_sibling
+    shifted_elem = tile_.shfl_down(new_sibling_node.lane_elem_, num_shift);
+    shifted_key_end_bit = is_border_ ? tile_.shfl_down(new_sibling_node.key_end_bit_, num_shift) : false;
+    new_sibling_node.num_keys_ -= num_shift;
+    if ((tile_.thread_rank() < new_sibling_node.num_keys_) ||
+        (node_width <= tile_.thread_rank() && tile_.thread_rank() < node_width + new_sibling_node.num_keys_)) {
+      new_sibling_node.lane_elem_ = shifted_elem;
+      new_sibling_node.key_end_bit_ = shifted_key_end_bit;
+    }
+    new_sibling_node.write_metadata_to_registers();
+    // make old sibling empty
+    sibling_node.make_empty_node(current_node_index);
     // update parent
     if (tile_.thread_rank() == get_key_lane_from_location(left_location)) {
       parent_node.lane_elem_ = pivot_key;
