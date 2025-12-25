@@ -43,7 +43,7 @@ struct bench_rates {
   float insertion_rate;
   float find_rate;
 };
-template <typename BTree, bool use_masstree, bool do_merge>
+template <typename BTree, bool use_masstree, bool do_merge, bool do_remove_empty_root>
 bench_rates bench_masstree_insertion_erase(thrust::device_vector<key_slice_type>& d_keys,
                                            thrust::device_vector<size_type>& d_lengths,
                                            thrust::device_vector<value_type>& d_values,
@@ -80,7 +80,12 @@ bench_rates bench_masstree_insertion_erase(thrust::device_vector<key_slice_type>
     erase_timer.start_timer();
     if constexpr (use_masstree) {
       if constexpr (do_merge) {
-        tree.erase_merge(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_keys, erase_stream);
+        if constexpr (do_remove_empty_root) {
+          tree.erase_merge_rmroot(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_keys, erase_stream);
+        }
+        else {
+          tree.erase_merge(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_keys, erase_stream);
+        }
       }
       else {
         tree.erase(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_keys, erase_stream);
@@ -233,19 +238,24 @@ int main(int argc, char** argv) {
 
   {
     std::cout << "Benchmarking masstree_slab_type erase" << std::endl;
-    bench_masstree_insertion_erase<masstree_slab_type, true, false>(
+    bench_masstree_insertion_erase<masstree_slab_type, true, false, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
       num_keys, max_key_length, num_experiments
     );
     std::cout << "Benchmarking masstree_slab_type erase_merge" << std::endl;
-    bench_masstree_insertion_erase<masstree_slab_type, true, true>(
+    bench_masstree_insertion_erase<masstree_slab_type, true, true, false>(
+      d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+      num_keys, max_key_length, num_experiments
+    );
+    std::cout << "Benchmarking masstree_slab_type erase_merge_rmroot" << std::endl;
+    bench_masstree_insertion_erase<masstree_slab_type, true, true, true>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
       num_keys, max_key_length, num_experiments
     );
   }
   if (test_blink && max_key_length == 1) {
     std::cout << "Benchmarking blink_tree_slab_type" << std::endl;
-    bench_masstree_insertion_erase<blink_tree_slab_type, false, false>(
+    bench_masstree_insertion_erase<blink_tree_slab_type, false, false, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
       num_keys, max_key_length, num_experiments
     );

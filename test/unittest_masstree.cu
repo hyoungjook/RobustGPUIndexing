@@ -192,7 +192,7 @@ void test_eraseall(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_
   testing_input input(num_keys, min_key_length, max_key_length);
   tree->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
-  tree->erase_merge(input.keys.data(), max_key_length, input.lengths.data(), num_keys);
+  tree->erase_merge_rmroot(input.keys.data(), max_key_length, input.lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
   tree->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
@@ -213,7 +213,7 @@ void test_erasenone(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key
   testing_input input(num_keys, min_key_length, max_key_length);
   tree->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
-  tree->erase_merge(input.keys_not_exist.data(), max_key_length, input.lengths.data(), num_keys);
+  tree->erase_merge_rmroot(input.keys_not_exist.data(), max_key_length, input.lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
   tree->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
@@ -235,7 +235,7 @@ void test_eraseallinsertall(btree* tree, uint32_t min_key_length_bytes, uint32_t
   tree->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
   tree->validate_tree();
-  tree->erase_merge(input.keys.data(), max_key_length, input.lengths.data(), num_keys);
+  tree->erase_merge_rmroot(input.keys.data(), max_key_length, input.lengths.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
   tree->validate_tree();
   tree->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), num_keys);
