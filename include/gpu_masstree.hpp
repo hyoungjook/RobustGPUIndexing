@@ -276,11 +276,10 @@ struct gpu_masstree {
         return false;
       }
     }
-
-    // now erase (and merge) the entry at the last_slice layer
-    const key_slice_type key_slice = key[key_length - 1];
+    // now erase the entry at the last_slice layer
     if constexpr (!do_merge) {
       // no-merge algorithm: just erase the element
+      const key_slice_type key_slice = key[key_length - 1];
       auto border_node = coop_traverse_until_border(key_slice, current_node_index, tile, allocator, true, concurrent);
       const bool success = border_node.erase(key_slice, true);
       if (success) {
@@ -289,8 +288,9 @@ struct gpu_masstree {
       border_node.unlock();
       return success;
     }
-    else { // if (do_merge)
+    else { // (do_merge)
       // merge algorithm
+      key_slice_type key_slice = key[key_length - 1];
       bool border_node_is_root;
       auto border_node = coop_traverse_until_border_merge(key_slice, current_node_index, border_node_is_root, tile, allocator);
       assert(border_node.is_locked());
@@ -301,27 +301,14 @@ struct gpu_masstree {
       border_node.unlock();
       if constexpr (do_remove_empty_root) {
         // collect empty roots
-        bool cascade_empty_roots = (border_node_is_root && border_node.num_keys() == 0);
-        for (int layer = static_cast<int>(key_length) - 2; layer >= 0; layer--) {
-          if (!cascade_empty_roots) break;
+        int layer = static_cast<int>(key_length) - 2;
+        while (layer >= 0 && border_node_is_root && border_node.num_keys() == 0) {
+          key_slice = key[layer];
           current_node_index = per_layer_root_indexes.pop(allocator, allocator_);
-          {
-            // check root not garbage
-            node_type root_node = node_type(
-                reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)),
-                current_node_index,
-                tile);
-            root_node.load(cuda_memory_order::memory_order_relaxed);
-            if (root_node.is_garbage()) {
-              cascade_empty_roots = false;
-              continue;
-            }
-          }
           border_node = coop_traverse_until_border_merge(key_slice, current_node_index, border_node_is_root, tile, allocator);
-          // current_node_index <- next_layer_root_node_index
-          const bool found = border_node.get_key_value_from_node(key_slice, current_node_index, false);
-          if (found) {
-            // check whether next layer root is still empty
+          if (border_node.get_key_value_from_node(key_slice, current_node_index, false)) {
+            // check next layer root node
+            // current_node_index is next_layer_root_node_index
             auto next_layer_root_node = node_type(
               reinterpret_cast<elem_type*>(allocator.address(allocator_, current_node_index)), current_node_index, tile);
             next_layer_root_node.lock();
@@ -336,20 +323,20 @@ struct gpu_masstree {
               next_layer_root_node.unlock();
               border_node.unlock();
               // TODO mark next_layer_root_node to be GCed
-              cascade_empty_roots = (border_node_is_root && border_node.num_keys() == 0);
             }
             else {
-              // other warp removed / inserted into the root
+              // other warp changed the root
               next_layer_root_node.unlock();
               border_node.unlock();
-              cascade_empty_roots = false;
+              break;
             }
           }
           else {
-            // already removed by other warp
+            // other warp changed the root
             border_node.unlock();
-            cascade_empty_roots = false;
+            break;
           }
+          layer--;
         }
         per_layer_root_indexes.destroy(allocator, allocator_);
       }
@@ -382,6 +369,7 @@ struct gpu_masstree {
       else {
         current_node.load();
       }
+      assert(!current_node.is_garbage());
       if (current_node.is_border()) {
         if (lock_border_node) {
           current_node.lock();
@@ -536,6 +524,7 @@ struct gpu_masstree {
 
       // now, the node is not full; if border it's locked, otherwise not locked.
       // traversal or insert
+      assert(!current_node.is_garbage());
       if (current_node.is_border()) {
         return current_node;
       } else {  // traverse
@@ -742,6 +731,7 @@ struct gpu_masstree {
 
       // now, the node is not underflow; if border it's locked, otherwise not locked.
       // traversal or erase
+      assert(!current_node.is_garbage());
       if (current_node.is_border()) {
         output_node_is_root = (current_node_index == current_root_index);
         return current_node;
