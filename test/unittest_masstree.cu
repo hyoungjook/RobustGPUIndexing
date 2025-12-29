@@ -42,6 +42,7 @@ class BTreeMapTest : public testing::Test {
     btree_map_ = new typename map_data::btree_map(*host_allocator_);
   }
   ~BTreeMapTest() override {
+    host_allocator_->print_stats();
     delete btree_map_;
     delete host_allocator_;
   }
