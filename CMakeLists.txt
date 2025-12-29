@@ -44,10 +44,10 @@ set(CUDA_FLAGS
     -Xcompiler=/W4,
     -Xcompiler=-Wall -W  -Wcast-qual -Wuninitialized>
     $<IF:$<CONFIG:Debug>,
-        -G -src-in-ptx,
+        -G -dopt=on -src-in-ptx,
         -lineinfo>
     ${CUDA_ARCHS}
-    -maxrregcount=70
+    -maxrregcount=64
 	--expt-extended-lambda
     --expt-relaxed-constexpr
     -Wno-deprecated-gpu-targets #silence deprecated architectures

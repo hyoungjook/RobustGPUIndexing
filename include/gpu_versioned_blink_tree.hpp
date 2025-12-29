@@ -78,6 +78,7 @@ struct gpu_versioned_btree {
   using value_type                       = Value;
   using pair_type                        = pair_type<Key, Value>;
   static auto constexpr branching_factor = B;
+  static auto constexpr cg_tile_size = branching_factor;
   using allocator_type                   = Allocator;
   using device_allocator_context_type    = device_allocator_context<allocator_type>;
 

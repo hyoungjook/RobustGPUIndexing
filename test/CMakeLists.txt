@@ -30,6 +30,7 @@ CPMAddPackage(
 set(GTEST_TESTS
     unittest_btree
     unittest_versioning
+    unittest_masstree
 )
 foreach(TEST ${GTEST_TESTS})
     add_executable(${TEST} ${TEST}.cu)

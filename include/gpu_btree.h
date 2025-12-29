@@ -31,3 +31,4 @@ struct node_type {
 
 #include "gpu_blink_tree.hpp"
 #include "gpu_versioned_blink_tree.hpp"
+#include "gpu_masstree.hpp"

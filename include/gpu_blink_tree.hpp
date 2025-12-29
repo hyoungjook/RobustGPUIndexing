@@ -70,6 +70,7 @@ struct gpu_blink_tree {
   using value_type                       = Value;
   using pair_type                        = pair_type<Key, Value>;
   static auto constexpr branching_factor = B;
+  static auto constexpr cg_tile_size = branching_factor;
 
   static constexpr key_type invalid_key     = std::numeric_limits<key_type>::max();
   static constexpr value_type invalid_value = std::numeric_limits<key_type>::max();
