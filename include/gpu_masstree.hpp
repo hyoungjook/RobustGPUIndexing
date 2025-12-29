@@ -170,7 +170,7 @@ struct gpu_masstree {
                                            device_allocator_context_type& allocator) {
     using node_type = masstree_node<tile_type>;
     size_type current_node_index = *d_root_index_;
-    size_type prev_root_index = current_node_index;
+    size_type prev_root_index = invalid_value;
     size_type slice = 0;
     while (slice < key_length) {
       const key_slice_type key_slice = key[slice];
@@ -199,8 +199,16 @@ struct gpu_masstree {
         // garbage after side-traversal means (is_garbage && !has_sibling)
         // which means it's an empty root node that's collected by erasure.
         // we should retry from the previous layer
+        border_node.unlock();
+        if (prev_root_index == invalid_value) {
+          // if it's cascading, restart from the global root
+          current_node_index = *d_root_index_;
+          slice = 0;
+          continue;
+        }
         assert(slice > 0);
         current_node_index = prev_root_index;
+        prev_root_index = invalid_value;
         slice--;
         continue;
       }
