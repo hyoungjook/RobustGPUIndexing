@@ -95,30 +95,22 @@ struct gpu_masstree {
              const size_type* key_lengths,
              const size_type num_keys,
              cudaStream_t stream = 0,
-             bool concurrent = false) {
+             bool do_remove_empty_root = true,
+             bool do_merge = true,
+             bool concurrent = true) {
     const uint32_t block_size = 512;
     const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    kernels::masstree_erase_kernel<false, false><<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, num_keys, *this, concurrent);
-  }
-
-  void erase_merge(const key_slice_type* keys,
-                   const size_type max_key_length,
-                   const size_type* key_lengths,
-                   const size_type num_keys,
-                   cudaStream_t stream = 0) {
-    const uint32_t block_size = 512;
-    const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    kernels::masstree_erase_kernel<true, false><<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, num_keys, *this, true);
-  }
-
-  void erase_merge_rmroot(const key_slice_type* keys,
-                          const size_type max_key_length,
-                          const size_type* key_lengths,
-                          const size_type num_keys,
-                          cudaStream_t stream = 0) {
-    const uint32_t block_size = 512;
-    const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    kernels::masstree_erase_kernel<true, true><<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, num_keys, *this, true);
+    if (do_remove_empty_root) {
+      kernels::masstree_erase_kernel<true, true><<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, num_keys, *this, true);
+    }
+    else {
+      if (do_merge) {
+        kernels::masstree_erase_kernel<true, false><<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, num_keys, *this, true);
+      }
+      else {
+        kernels::masstree_erase_kernel<false, false><<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, num_keys, *this, concurrent);
+      }
+    }
   }
 
   // device-side APIs

@@ -92,17 +92,7 @@ bench_rates bench_masstree_insertion_erase(thrust::device_vector<key_slice_type>
     gpu_timer erase_timer(erase_stream);
     erase_timer.start_timer();
     if constexpr (use_masstree) {
-      if constexpr (do_merge) {
-        if constexpr (do_remove_empty_root) {
-          tree.erase_merge_rmroot(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_keys, erase_stream);
-        }
-        else {
-          tree.erase_merge(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_keys, erase_stream);
-        }
-      }
-      else {
-        tree.erase(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_keys, erase_stream);
-      }
+      tree.erase(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_keys, erase_stream, do_remove_empty_root, do_merge, (do_remove_empty_root || do_merge));
     }
     else {
       tree.erase(d_query_keys.data().get(), num_keys, erase_stream);
