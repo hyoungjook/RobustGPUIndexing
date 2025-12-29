@@ -152,7 +152,9 @@ struct gpu_masstree {
                                            device_allocator_context_type& allocator) {
     using node_type = masstree_node<tile_type>;
     size_type current_node_index = *d_root_index_;
-    for (size_type slice = 0; slice < key_length; slice++) {
+    size_type prev_root_index = current_node_index;
+    size_type slice = 0;
+    while (slice < key_length) {
       const key_slice_type key_slice = key[slice];
       const bool key_end = (slice == key_length - 1);
       struct split_early_exit_check {
@@ -169,10 +171,23 @@ struct gpu_masstree {
       auto border_node = coop_traverse_until_border_split(key_slice, key_end, current_node_index, tile, allocator, early_exit_check);
       if (early_exit_check.early_exited_) {
         // find next layer root and continue now
+        //prev_root_index = current_node_index;
         border_node.get_key_value_from_node(key_slice, current_node_index, key_end);
+        slice++;
         continue;
       }
       assert(border_node.is_locked());
+      if (border_node.is_garbage()) {
+        // garbage after side-traversal means (is_garbage && !has_sibling)
+        // which means it's an empty root node that's collected by erasure.
+        // we should retry from the previous layer
+        assert(slice > 0);
+        current_node_index = prev_root_index;
+        slice--;
+        continue;
+      }
+      prev_root_index = current_node_index;
+      slice++;
       value_type value_to_insert;
       if (key_end) {
         value_to_insert = value;
@@ -335,7 +350,6 @@ struct gpu_masstree {
       else {
         current_node.load();
       }
-      assert(!current_node.is_garbage());
       if (current_node.is_border()) {
         if (lock_border_node) {
           current_node.lock();
@@ -488,7 +502,6 @@ struct gpu_masstree {
 
       // now, the node is not full; if border it's locked, otherwise not locked.
       // traversal or insert
-      assert(!current_node.is_garbage());
       if (current_node.is_border()) {
         return current_node;
       } else {  // traverse
@@ -706,7 +719,6 @@ struct gpu_masstree {
 
       // now, the node is not underflow; if border it's locked, otherwise not locked.
       // traversal or erase
-      assert(!current_node.is_garbage());
       if (current_node.is_border()) {
         output_node_is_root = (current_node_index == current_root_index);
         return current_node;
