@@ -241,25 +241,26 @@ int main(int argc, char** argv) {
   using node_type           = GpuBTree::node_type<key_slice_type, value_type, branching_factor>;
   using slab_allocator_type = device_allocator::SlabAllocLight<node_type, 4, 1024 * 8, 32, 128>;
   using simple_bump_alloc_type = simple_bump_allocator<128>;
-  using masstree_bump_type = GpuBTree::gpu_masstree<simple_bump_alloc_type>;
+  using simple_slab_alloc_type = simple_slab_allocator<128>;
+  using masstree_slab_type = GpuBTree::gpu_masstree<simple_slab_alloc_type>;
 
   using slab_allocator_type_blink = device_allocator::SlabAllocLight<node_type, 4, 1024 * 8, 16, 128>;
   using blink_tree_slab_type =
       GpuBTree::gpu_blink_tree<key_slice_type, value_type, branching_factor, slab_allocator_type_blink>;
 
   {
-    std::cout << "Benchmarking masstree_bump_type erase" << std::endl;
-    bench_masstree_insertion_erase<masstree_bump_type, true, false, false>(
+    std::cout << "Benchmarking masstree_slab_type erase" << std::endl;
+    bench_masstree_insertion_erase<masstree_slab_type, true, false, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
       num_keys, max_key_length, num_experiments
     );
-    std::cout << "Benchmarking masstree_bump_type erase_merge" << std::endl;
-    bench_masstree_insertion_erase<masstree_bump_type, true, true, false>(
+    std::cout << "Benchmarking masstree_slab_type erase_merge" << std::endl;
+    bench_masstree_insertion_erase<masstree_slab_type, true, true, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
       num_keys, max_key_length, num_experiments
     );
-    std::cout << "Benchmarking masstree_bump_type erase_merge_rmroot" << std::endl;
-    bench_masstree_insertion_erase<masstree_bump_type, true, true, true>(
+    std::cout << "Benchmarking masstree_slab_type erase_merge_rmroot" << std::endl;
+    bench_masstree_insertion_erase<masstree_slab_type, true, true, true>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
       num_keys, max_key_length, num_experiments
     );

@@ -133,6 +133,7 @@ using slab_allocator_type = device_allocator::SlabAllocLight<node_type,
                                                              SlabAllocParam::SlabSize>;
 
 using simple_bump_alloc_type = simple_bump_allocator<128>;
+using simple_slab_alloc_type = simple_slab_allocator<128>;
 
 typedef testing::Types<
     //BTreeMapData<
@@ -141,7 +142,8 @@ typedef testing::Types<
     //BTreeMapData<
     //    GpuBTree::
     //        gpu_masstree<slab_allocator_type>>>
-    BTreeMapData<GpuBTree::gpu_masstree<simple_bump_alloc_type>>>
+    //BTreeMapData<GpuBTree::gpu_masstree<simple_bump_alloc_type>>,
+    BTreeMapData<GpuBTree::gpu_masstree<simple_slab_alloc_type>>>
     Implementations;
 
 TYPED_TEST_SUITE(BTreeMapTest, Implementations);

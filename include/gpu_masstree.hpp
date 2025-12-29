@@ -33,6 +33,7 @@
 #include <type_traits>
 
 #include <simple_bump_alloc.hpp>
+#include <simple_slab_alloc.hpp>
 
 namespace GpuBTree {
 
