@@ -113,6 +113,32 @@ struct gpu_masstree {
     }
   }
 
+  void test_concurrent_insert_erase(const key_slice_type* insert_keys,
+                                    const size_type* insert_key_lengths,
+                                    const value_type* insert_values,
+                                    const size_type insert_num_keys,
+                                    const key_slice_type* erase_keys,
+                                    const size_type* erase_key_lengths,
+                                    const size_type erase_num_keys,
+                                    const size_type max_key_length,
+                                    cudaStream_t stream = 0,
+                                    bool do_remove_empty_root = true,
+                                    bool do_merge = true) {
+    const uint32_t block_size = 512;
+    const uint32_t num_blocks = (insert_num_keys + erase_num_keys + block_size - 1) / block_size;
+    if (do_remove_empty_root) {
+      kernels::masstree_test_insert_erase_kernel<true, true><<<num_blocks, block_size, 0, stream>>>(insert_keys, insert_key_lengths, insert_values, insert_num_keys, erase_keys, erase_key_lengths, erase_num_keys, max_key_length, *this);
+    }
+    else {
+      if (do_merge) {
+        kernels::masstree_test_insert_erase_kernel<true, false><<<num_blocks, block_size, 0, stream>>>(insert_keys, insert_key_lengths, insert_values, insert_num_keys, erase_keys, erase_key_lengths, erase_num_keys, max_key_length, *this);
+      }
+      else {
+        kernels::masstree_test_insert_erase_kernel<false, false><<<num_blocks, block_size, 0, stream>>>(insert_keys, insert_key_lengths, insert_values, insert_num_keys, erase_keys, erase_key_lengths, erase_num_keys, max_key_length, *this);
+      }
+    }
+  }
+
   // device-side APIs
   template <typename tile_type>
   DEVICE_QUALIFIER value_type cooperative_find(const key_slice_type* key,
@@ -1061,6 +1087,16 @@ struct gpu_masstree {
                                                         btree tree,
                                                         bool concurrent);
 
+  template <bool do_merge, bool do_remove_empty_root, typename key_slice_type, typename value_type, typename size_type, typename btree>
+  friend __global__ void kernels::masstree_test_insert_erase_kernel(const key_slice_type* insert_keys,
+                                                                    const size_type* insert_key_lengths,
+                                                                    const value_type* insert_values,
+                                                                    const size_type insert_keys_count,
+                                                                    const key_slice_type* erase_keys,
+                                                                    const size_type* erase_key_lengths,
+                                                                    const size_type erase_keys_count,
+                                                                    const size_type max_key_length,
+                                                                    btree tree);
 }; // struct gpu_masstree
 
 } // namespace GPUBTree

@@ -1130,5 +1130,62 @@ __global__ void masstree_erase_kernel(const key_slice_type* keys,
   }
 }
 
+template <bool do_merge, bool do_remove_empty_root, typename key_slice_type, typename value_type, typename size_type, typename btree>
+__global__ void masstree_test_insert_erase_kernel(const key_slice_type* insert_keys,
+                                                  const size_type* insert_key_lengths,
+                                                  const value_type* insert_values,
+                                                  const size_type insert_keys_count,
+                                                  const key_slice_type* erase_keys,
+                                                  const size_type* erase_key_lengths,
+                                                  const size_type erase_keys_count,
+                                                  const size_type max_key_length,
+                                                  btree tree) {
+  auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+  auto block = cg::this_thread_block();
+  auto tile = cg::tiled_partition<btree::cg_tile_size>(block);
+  auto tile_id = thread_id / btree::cg_tile_size;
+  // if tile_id is even -> do insert. if tile_id is odd -> do erase.
+  const bool is_insert = (tile_id % 2 == 0);
+  // op_thread_id is id of threads within each op (insert/erase).
+  auto op_thread_id = (tile_id / 2) * btree::cg_tile_size + tile.thread_rank();
+  if ((op_thread_id - tile.thread_rank()) >= (is_insert ? insert_keys_count : erase_keys_count)) { return; }
+  const key_slice_type* key = nullptr;
+  size_type key_length = 0;
+  value_type value = btree::invalid_value;
+  bool to_do = false;
+  if (is_insert) {
+    if (op_thread_id < insert_keys_count) {
+      key = &insert_keys[max_key_length * op_thread_id];
+      key_length = insert_key_lengths ? insert_key_lengths[op_thread_id] : max_key_length;
+      value = insert_values[op_thread_id];
+      to_do = true;
+    }
+  }
+  else {
+    if (op_thread_id < erase_keys_count) {
+      key = &erase_keys[max_key_length * op_thread_id];
+      key_length = erase_key_lengths ? erase_key_lengths[op_thread_id] : max_key_length;
+      to_do = true;
+    }
+  }
+  using allocator_type = typename btree::device_allocator_context_type;
+  allocator_type allocator{tree.allocator_, tile};
+  auto work_queue = tile.ballot(to_do);
+  while (work_queue) {
+    auto cur_rank = __ffs(work_queue) - 1;
+    auto cur_key = tile.shfl(key, cur_rank);
+    auto cur_key_length = tile.shfl(key_length, cur_rank);
+    auto cur_value = tile.shfl(value, cur_rank);
+    if (is_insert) {
+      tree.cooperative_insert(cur_key, cur_key_length, cur_value, tile, allocator);
+    }
+    else {
+      tree.cooperative_erase<do_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, true);
+    }
+    if (tile.thread_rank() == cur_rank) { to_do = false; }
+    work_queue = tile.ballot(to_do);
+  }
+}
+
 }  // namespace kernels
 }  // namespace GpuBTree
