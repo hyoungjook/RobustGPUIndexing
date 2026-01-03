@@ -1031,7 +1031,8 @@ __global__ void masstree_insert_kernel(const key_slice_type* keys,
                                        const size_type* key_lengths,
                                        const value_type* values,
                                        const size_type keys_count,
-                                       btree tree) {
+                                       btree tree,
+                                       bool update_if_exists) {
   auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
   auto block = cg::this_thread_block();
   auto tile = cg::tiled_partition<btree::cg_tile_size>(block);
@@ -1054,7 +1055,7 @@ __global__ void masstree_insert_kernel(const key_slice_type* keys,
     auto cur_key = tile.shfl(key, cur_rank);
     auto cur_key_length = tile.shfl(key_length, cur_rank);
     auto cur_value = tile.shfl(value, cur_rank);
-    tree.cooperative_insert(cur_key, cur_key_length, cur_value, tile, allocator);
+    tree.cooperative_insert(cur_key, cur_key_length, cur_value, tile, allocator, update_if_exists);
     if (tile.thread_rank() == cur_rank) { to_insert = false; }
     work_queue = tile.ballot(to_insert);
   }

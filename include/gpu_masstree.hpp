@@ -73,10 +73,11 @@ struct gpu_masstree {
               const size_type* key_lengths,
               const value_type* values,
               const size_type num_keys,
-              cudaStream_t stream = 0) {
+              cudaStream_t stream = 0,
+              bool update_if_exists = false) {
     const uint32_t block_size = 512;
     const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    kernels::masstree_insert_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, values, num_keys, *this);
+    kernels::masstree_insert_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, values, num_keys, *this, update_if_exists);
   }
 
   void find(const key_slice_type* keys,
@@ -218,13 +219,14 @@ struct gpu_masstree {
       if (border_node.get_key_value_from_node(key_slice, current_node_index, key_end)) {
         // key exists, the value is stored in current_node_index
         if (key_end) {
-          // if (update_if_exists), we update the value and return true
-          // if (fail_if_exists), we just return false
           if (update_if_exists) {
             border_node.update(key_slice, value);
           }
-          border_node.unlock();
-          return update_if_exists;
+          else {
+            // fail_if_exists
+            border_node.unlock();
+            return false;
+          }
         }
         else {
           // continue to next layer
@@ -1034,7 +1036,8 @@ struct gpu_masstree {
                                                          const size_type* key_lengths,
                                                          const value_type* values,
                                                          const size_type keys_count,
-                                                         btree tree);
+                                                         btree tree,
+                                                         bool update_if_exists);
 
   template <typename key_slice_type, typename value_type, typename size_type, typename btree>
   friend __global__ void kernels::masstree_find_kernel(const key_slice_type* keys,

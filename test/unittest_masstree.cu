@@ -82,6 +82,7 @@ struct testing_input {
       , keys(num_keys * max_key_length)
       , lengths(num_keys)
       , values(num_keys)
+      , values2(num_keys)
       , keys_not_exist(input_num_keys * max_key_length)
   {
     assert(min_key_length <= max_key_length);
@@ -99,6 +100,7 @@ struct testing_input {
       }
       lengths[i] = key_length;
       values[i] = static_cast<value_type>(keys[(i + 1) * key_length - 1] + 1);
+      values2[i] = values[i] + 7;
     }
     if (duplicate) {
       for (std::size_t i = (num_keys + 1) / 2; i < num_keys; i++) {
@@ -109,6 +111,7 @@ struct testing_input {
         }
         lengths[i] = lengths[src_i];
         values[i] = values[src_i];
+        values2[i] = values[i] + 7;
       }
     }
   }
@@ -116,6 +119,8 @@ struct testing_input {
     keys.free();
     lengths.free();
     values.free();
+    values2.free();
+    keys_not_exist.free();
   }
 
   std::size_t num_keys;
@@ -124,6 +129,7 @@ struct testing_input {
   mapped_vector<key_slice_type> keys;
   mapped_vector<size_type> lengths;
   mapped_vector<value_type> values;
+  mapped_vector<value_type> values2;
   mapped_vector<key_slice_type> keys_not_exist;
 };
 
@@ -210,6 +216,27 @@ void test_notexist(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_
 }
 
 template <typename btree>
+void test_update(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
+  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
+  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
+  mapped_vector<value_type> find_results(num_keys);
+  testing_input input(num_keys, min_key_length, max_key_length);
+  tree->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+  cuda_try(cudaDeviceSynchronize());
+  tree->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values2.data(), num_keys, 0, true);
+  cuda_try(cudaDeviceSynchronize());
+  tree->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), num_keys);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  for (std::size_t i = 0; i < num_keys; i++) {
+    auto expected_value = input.values2[i];
+    auto found_value    = find_results[i];
+    ASSERT_EQ(found_value, expected_value);
+  }
+  find_results.free();
+  input.free();
+}
+
+template <typename btree>
 void test_eraseall(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
   const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
   const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
@@ -245,6 +272,29 @@ void test_erasenone(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   for (std::size_t i = 0; i < num_keys; i++) {
     auto expected_value = input.values[i];
+    auto found_value    = find_results[i];
+    ASSERT_EQ(found_value, expected_value);
+  }
+  find_results.free();
+  input.free();
+}
+
+template <typename btree>
+void test_inserttwiceeraseall(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
+  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
+  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
+  mapped_vector<value_type> find_results(num_keys);
+  testing_input input(num_keys, min_key_length, max_key_length);
+  tree->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+  cuda_try(cudaDeviceSynchronize());
+  tree->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+  cuda_try(cudaDeviceSynchronize());
+  tree->erase(input.keys.data(), max_key_length, input.lengths.data(), num_keys);
+  cuda_try(cudaDeviceSynchronize());
+  tree->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), num_keys);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  for (std::size_t i = 0; i < num_keys; i++) {
+    auto expected_value = invalid_value;
     auto found_value    = find_results[i];
     ASSERT_EQ(found_value, expected_value);
   }
@@ -345,11 +395,17 @@ TYPED_TEST(BTreeMapTest, FindExist##min_length##_##max_length) { \
 TYPED_TEST(BTreeMapTest, FindNotExist##min_length##_##max_length) { \
   test_notexist(this->btree_map_, min_length, max_length); \
 } \
+TYPED_TEST(BTreeMapTest, Update##min_length##_##max_length) { \
+  test_update(this->btree_map_, min_length, max_length); \
+} \
 TYPED_TEST(BTreeMapTest, EraseAll##min_length##_##max_length) { \
   test_eraseall(this->btree_map_, min_length, max_length); \
 } \
 TYPED_TEST(BTreeMapTest, EraseNone##min_length##_##max_length) { \
   test_erasenone(this->btree_map_, min_length, max_length); \
+} \
+TYPED_TEST(BTreeMapTest, InsertTwiceEraseAll##min_length##_##max_length) { \
+  test_inserttwiceeraseall(this->btree_map_, min_length, max_length); \
 } \
 TYPED_TEST(BTreeMapTest, EraseAllInsertAll##min_length##_##max_length) { \
   test_eraseallinsertall(this->btree_map_, min_length, max_length); \
