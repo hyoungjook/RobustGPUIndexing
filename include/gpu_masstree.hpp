@@ -152,9 +152,9 @@ struct gpu_masstree {
     size_type current_node_index = *d_root_index_;
     for (size_type slice = 0; slice < key_length; slice++) {
       const key_slice_type key_slice = key[slice];
-      const bool key_end = (slice == key_length - 1);
+      const bool link_or_value = (slice < key_length - 1);
       auto border_node = coop_traverse_until_border(key_slice, current_node_index, tile, allocator, false, concurrent);
-      const bool found = border_node.get_key_value_from_node(key_slice, current_node_index, key_end);
+      const bool found = border_node.get_key_value_from_node(key_slice, current_node_index, link_or_value);
       if (!found) {
         // key not exists, exit early
         return invalid_value;
@@ -177,23 +177,23 @@ struct gpu_masstree {
     size_type slice = 0;
     while (slice < key_length) {
       const key_slice_type key_slice = key[slice];
-      const bool key_end = (slice == key_length - 1);
+      const bool link_or_value = (slice < key_length - 1);
       struct split_early_exit_check {
         DEVICE_QUALIFIER bool operator()(const node_type& border_node,
                                          const key_slice_type& key_slice,
-                                         bool key_end) const {
+                                         bool link_or_value) const {
           // if the border node already has the key slice and it's not the last slice,
           // we just follow the same entry, no need to update the node; so we don't lock it
-          return !key_end && border_node.key_is_in_node(key_slice, key_end);
+          return (link_or_value == node_type::BORDER_ENTRY_LINK) && border_node.key_is_in_node(key_slice, link_or_value);
         }
         DEVICE_QUALIFIER void early_exit() { early_exited_ = true; }
         bool early_exited_ = false;
       } early_exit_check;
-      auto border_node = coop_traverse_until_border_split(key_slice, key_end, current_node_index, tile, allocator, early_exit_check);
+      auto border_node = coop_traverse_until_border_split(key_slice, link_or_value, current_node_index, tile, allocator, early_exit_check);
       if (early_exit_check.early_exited_) {
         // find next layer root and continue now
         prev_root_index = current_node_index;
-        border_node.get_key_value_from_node(key_slice, current_node_index, key_end);
+        border_node.get_key_value_from_node(key_slice, current_node_index, link_or_value);
         slice++;
         continue;
       }
@@ -216,9 +216,9 @@ struct gpu_masstree {
         continue;
       }
       prev_root_index = current_node_index;
-      if (border_node.get_key_value_from_node(key_slice, current_node_index, key_end)) {
+      if (border_node.get_key_value_from_node(key_slice, current_node_index, link_or_value)) {
         // key exists, the value is stored in current_node_index
-        if (key_end) {
+        if (link_or_value == node_type::BORDER_ENTRY_VALUE) {
           if (update_if_exists) {
             border_node.update(key_slice, value);
           }
@@ -237,7 +237,7 @@ struct gpu_masstree {
       }
       else {
         // key not exists
-        if (key_end) {
+        if (link_or_value == node_type::BORDER_ENTRY_VALUE) {
           // insert value to the node
           current_node_index = value;
         }
@@ -252,7 +252,7 @@ struct gpu_masstree {
           next_root_node.store(cuda_memory_order::memory_order_relaxed);
           __threadfence();
         }
-        border_node.insert(key_slice, current_node_index, key_end);
+        border_node.insert(key_slice, current_node_index, link_or_value);
       }
       border_node.store(cuda_memory_order::memory_order_relaxed);
       border_node.unlock();
@@ -277,7 +277,7 @@ struct gpu_masstree {
       const key_slice_type key_slice = key[slice];
       auto border_node = coop_traverse_until_border(key_slice, current_node_index, tile, allocator, false,
                                                     do_merge || do_remove_empty_root || concurrent);
-      const bool found = border_node.get_key_value_from_node(key_slice, current_node_index, false);
+      const bool found = border_node.get_key_value_from_node(key_slice, current_node_index, node_type::BORDER_ENTRY_LINK);
       if (!found) {
         // key not exists, exit early
         return false;
@@ -288,7 +288,7 @@ struct gpu_masstree {
       // no-merge algorithm: just erase the element
       const key_slice_type key_slice = key[key_length - 1];
       auto border_node = coop_traverse_until_border(key_slice, current_node_index, tile, allocator, true, concurrent);
-      const bool success = border_node.erase(key_slice, true);
+      const bool success = border_node.erase(key_slice, node_type::BORDER_ENTRY_VALUE);
       if (success) {
         border_node.store(cuda_memory_order::memory_order_relaxed);
       }
@@ -301,21 +301,21 @@ struct gpu_masstree {
       struct merge_early_exit_check {
         DEVICE_QUALIFIER bool operator()(const node_type& border_node,
                                          const key_slice_type& key_slice,
-                                         bool key_end) const {
+                                         bool link_or_value) const {
           // if the border node doesn't have the key slice, no need to lock the node
-          return !border_node.key_is_in_node(key_slice, key_end);
+          return !border_node.key_is_in_node(key_slice, link_or_value);
         }
         DEVICE_QUALIFIER void early_exit() { early_exited_ = true; }
         DEVICE_QUALIFIER void reset() { early_exited_ = false; }
         bool early_exited_ = false;
       } early_exit_check;
       bool border_node_is_root;
-      auto border_node = coop_traverse_until_border_merge(key_slice, true, current_node_index, border_node_is_root, tile, allocator, early_exit_check);
+      auto border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_VALUE, current_node_index, border_node_is_root, tile, allocator, early_exit_check);
       if (early_exit_check.early_exited_) {
         return false; // key not exists
       }
       assert(border_node.is_locked());
-      const bool success = border_node.erase(key_slice, true);
+      const bool success = border_node.erase(key_slice, node_type::BORDER_ENTRY_VALUE);
       if (success) {
         border_node.store(cuda_memory_order::memory_order_relaxed);
       }
@@ -327,11 +327,11 @@ struct gpu_masstree {
           key_slice = key[layer];
           current_node_index = per_layer_root_indexes.pop();
           early_exit_check.reset();
-          border_node = coop_traverse_until_border_merge(key_slice, false, current_node_index, border_node_is_root, tile, allocator, early_exit_check);
+          border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_LINK, current_node_index, border_node_is_root, tile, allocator, early_exit_check);
           if (early_exit_check.early_exited_) {
             break; // other warp removed the key
           }
-          if (border_node.get_key_value_from_node(key_slice, current_node_index, false)) {
+          if (border_node.get_key_value_from_node(key_slice, current_node_index, node_type::BORDER_ENTRY_LINK)) {
             // check next layer root node
             // current_node_index is next_layer_root_node_index
             auto next_layer_root_node = node_type(
@@ -341,7 +341,7 @@ struct gpu_masstree {
             if (!next_layer_root_node.is_garbage() && next_layer_root_node.num_keys() == 0) {
               // still empty, remove them
               next_layer_root_node.make_garbage_node(false);
-              border_node.erase(key_slice, false);
+              border_node.erase(key_slice, node_type::BORDER_ENTRY_LINK);
               next_layer_root_node.store(cuda_memory_order::memory_order_relaxed);
               __threadfence();
               border_node.store(cuda_memory_order::memory_order_relaxed);
@@ -413,7 +413,7 @@ struct gpu_masstree {
 
   template <typename tile_type, typename EarlyExitCheck>
   DEVICE_QUALIFIER masstree_node<tile_type> coop_traverse_until_border_split(const key_slice_type& key_slice,
-                                                                             bool key_end,
+                                                                             bool link_or_value,
                                                                              const size_type& current_root_index,
                                                                              const tile_type& tile,
                                                                              device_allocator_context_type& allocator,
@@ -433,7 +433,7 @@ struct gpu_masstree {
       bool link_traversed = traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
 
       // early exit condition
-      if (current_node.is_border() && early_exit_check(current_node, key_slice, key_end)) {
+      if (current_node.is_border() && early_exit_check(current_node, key_slice, link_or_value)) {
         early_exit_check.early_exit();
         return current_node;
       }
@@ -558,7 +558,7 @@ struct gpu_masstree {
 
   template <typename tile_type, typename EarlyExitCheck>
   DEVICE_QUALIFIER masstree_node<tile_type> coop_traverse_until_border_merge(const key_slice_type& key_slice,
-                                                                             bool key_end,
+                                                                             bool link_or_value,
                                                                              const size_type& current_root_index,
                                                                              bool& output_node_is_root,
                                                                              const tile_type& tile,
@@ -581,7 +581,7 @@ struct gpu_masstree {
       bool link_traversed = traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
 
       // early exit condition
-      if (current_node.is_border() && early_exit_check(current_node, key_slice, key_end)) {
+      if (current_node.is_border() && early_exit_check(current_node, key_slice, link_or_value)) {
         early_exit_check.early_exit();
         return current_node;
       }
@@ -884,9 +884,9 @@ struct gpu_masstree {
         // num_traversed_children++
         stack.top_metadata()++;
         if ((!current_node.is_border()) ||
-            (!current_node.get_key_end_bit_from_location(num_traversed_children))) {
-          // If it's a non-leaf node, push the next node
-          // If it's a leaf node but non-last-slice entry, push the next layer root
+            (current_node.is_location_link_or_value(num_traversed_children) == node_type::BORDER_ENTRY_LINK)) {
+          // If it's a interior node, push the next node
+          // If it's a border node but link entry, push the next layer root
           stack.push(current_node.get_value_from_location(num_traversed_children), 0);
         }
       }
@@ -919,19 +919,20 @@ struct gpu_masstree {
       if (node.is_border()) {
         uint16_t num_keys = node.num_keys();
         key_slice_type before_key = 0;
-        bool before_key_end_bit = false;
+        bool before_link_or_value = false;
         for (uint16_t i = 0; i < num_keys; i++) {
           auto key = node.get_key_from_location(i);
-          auto key_end_bit = node.get_key_end_bit_from_location(i);
+          auto link_or_value = node.is_location_link_or_value(i);
           if (i > 0) {
             assert(before_key <= key);
             if (before_key == key) {
-              assert((before_key_end_bit == true && key_end_bit == false));
+              assert((before_link_or_value == node_type::BORDER_ENTRY_VALUE && 
+                      link_or_value == node_type::BORDER_ENTRY_LINK));
             }
           }
           before_key = key;
-          before_key_end_bit = key_end_bit;
-          if (node.get_key_end_bit_from_location(i)) {
+          before_link_or_value = link_or_value;
+          if (node.is_location_link_or_value(i) == node_type::BORDER_ENTRY_VALUE) {
             num_entries++;
           }
         }
