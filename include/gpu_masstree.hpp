@@ -89,11 +89,13 @@ struct gpu_masstree {
              const size_type* upper_key_lengths = nullptr,
              size_type* counts = nullptr,
              value_type* values = nullptr,
+             key_slice_type* out_keys = nullptr,
+             size_type* out_key_lengths = nullptr,
              cudaStream_t stream = 0,
              bool concurrent = false) {
     const uint32_t block_size = 512;
     const uint32_t num_blocks = (num_queries + block_size - 1) / block_size;
-    kernels::masstree_range_kernel<<<num_blocks, block_size, 0, stream>>>(lower_keys, lower_key_lengths, max_key_length, max_count_per_query, num_queries, upper_keys, upper_key_lengths, counts, values, *this, concurrent);
+    kernels::masstree_range_kernel<<<num_blocks, block_size, 0, stream>>>(lower_keys, lower_key_lengths, max_key_length, max_count_per_query, num_queries, upper_keys, upper_key_lengths, counts, values, out_keys, out_key_lengths, *this, concurrent);
   }
 
   void insert(const key_slice_type* keys,
@@ -187,8 +189,11 @@ struct gpu_masstree {
                                                device_allocator_context_type& allocator,
                                                const key_slice_type* upper_key = nullptr,
                                                const size_type upper_key_length = 1,
-                                               const size_type out_max_count = 1,
+                                               size_type out_max_count = 1,
                                                value_type* out_value = nullptr,
+                                               key_slice_type* out_keys = nullptr,
+                                               size_type* out_key_lengths = nullptr,
+                                               const size_type out_key_max_length = 1,
                                                bool concurrent = false) {
     using node_type = masstree_node<tile_type>;
     using dynamic_stack_type = utils::dynamic_stack<tile_type, device_allocator_context_type>;
@@ -219,16 +224,32 @@ struct gpu_masstree {
       while (true) {
         if (border_node.is_garbage()) { scan_op = -1; }
         else {
-          scan_op = border_node.scan(lower_key_slice,
-                                     lower_key_lv,
-                                     ignore_upper_key,
-                                     upper_key_slice,
-                                     upper_key_lv,
-                                     out_max_count - out_count,
-                                     out_value + out_count,
-                                     out_count);
+          // scan a node and store outputs
+          int count = border_node.scan(lower_key_slice,
+                                       lower_key_lv,
+                                       ignore_upper_key,
+                                       upper_key_slice,
+                                       upper_key_lv,
+                                       out_max_count,
+                                       scan_op,
+                                       out_value,
+                                       out_keys,
+                                       layer,
+                                       out_key_max_length);
+          assert(count <= out_max_count);
+          out_count += count;
+          out_max_count -= count;
+          if (out_value) { out_value += count; }
+          if (out_keys) {
+            // TODO fill key slices for s < layer
+            out_keys += (out_key_max_length * count);
+          }
+          if (out_key_lengths) {
+            if (tile.thread_rank() < count) { out_key_lengths[tile.thread_rank()] = (layer + 1); }
+            out_key_lengths += count;
+          }
           //  if got enough outputs, end scanning
-          if (out_count >= out_max_count) { scan_op = -3; }
+          if (out_max_count <= 0) { scan_op = -3; }
           else if (scan_op < 0) {
             // if it's end of this layer, go to prev layer
             if (!border_node.has_sibling()) { scan_op = (layer == 0) ? -3 : -2; }
@@ -1224,6 +1245,8 @@ struct gpu_masstree {
                                                         const size_type* upper_key_lengths,
                                                         size_type* counts,
                                                         value_type* values,
+                                                        key_slice_type* out_keys,
+                                                        size_type* out_key_lengths,
                                                         btree tree,
                                                         bool concurrent);
 }; // struct gpu_masstree

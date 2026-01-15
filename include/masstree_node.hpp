@@ -258,20 +258,26 @@ struct masstree_node {
                             const key_type& upper_key,
                             const bool upper_link_or_value,
                             const size_type out_max_count,
+                            int& link_entry_location,
                             value_type* out_value,
-                            size_type& out_count) const {
+                            key_type* out_keys,
+                            const size_type& layer,
+                            const size_type& out_key_max_length) const {
     // return values in range, until we meet the link entry
     assert(is_border());
     const bool in_range = is_valid_key_lane() &&
         cmp_key_lv(lower_key, lower_link_or_value, lane_elem_, link_or_value_) &&
         (ignore_upper_bound || cmp_key_lv(lane_elem_, link_or_value_, upper_key, upper_link_or_value));
     const uint32_t in_range_ballot = tile_.ballot(in_range);
-    if (in_range_ballot == 0) { return -1; }
+    if (in_range_ballot == 0) {
+      link_entry_location = -1;
+      return 0;
+    }
     const int first_location = __ffs(in_range_ballot) - 1;
     int last_location = utils::bits::bfind(in_range_ballot) + 1;
     const bool in_range_and_link = in_range && (link_or_value_ == BORDER_ENTRY_LINK);
     const uint32_t in_range_and_link_ballot = tile_.ballot(in_range_and_link);
-    int link_entry_location = -1;
+    link_entry_location = -1;
     if (in_range_and_link_ballot != 0) {
       link_entry_location = __ffs(in_range_and_link_ballot) - 1;
       last_location = link_entry_location;
@@ -284,14 +290,20 @@ struct masstree_node {
       link_entry_location = -1;
     }
     // store results
-    if (out_value != nullptr && count > 0 &&
-        get_value_lane_from_location(first_location) <= tile_.thread_rank() &&
-        tile_.thread_rank() < get_value_lane_from_location(last_location)) {
-      out_value[tile_.thread_rank() - get_value_lane_from_location(first_location)] = lane_elem_;
+    if (count > 0) {
+      if (out_value != nullptr &&
+          get_value_lane_from_location(first_location) <= tile_.thread_rank() &&
+          tile_.thread_rank() < get_value_lane_from_location(last_location)) {
+        out_value[tile_.thread_rank() - get_value_lane_from_location(first_location)] = lane_elem_;
+      }
+      if (out_keys != nullptr &&
+          get_key_lane_from_location(first_location) <= tile_.thread_rank() &&
+          tile_.thread_rank() < get_key_lane_from_location(last_location)) {
+        out_keys[(tile_.thread_rank() - get_key_lane_from_location(first_location)) * out_key_max_length + layer] = lane_elem_;
+      }
     }
-    out_count += count;
     // return value: location of the link entry. If no link entry in range, return -1.
-    return link_entry_location;
+    return count;
   }
 
   DEVICE_QUALIFIER int get_split_left_width() const {

@@ -176,6 +176,8 @@ struct testing_range_input {
       , upper_lengths(num_queries)
       , counts(num_queries)
       , values(num_queries * max_count_per_query)
+      , out_keys(num_queries * max_count_per_query * max_key_length)
+      , out_key_lengths(num_queries * max_count_per_query)
   {
     input.sort();
     make_input();
@@ -198,6 +200,11 @@ struct testing_range_input {
       counts[i] = min(count, max_count_per_query);
       for (uint32_t v = 0; v < counts[i]; v++) {
         values[i * max_count_per_query + v] = input.values[begin + v];
+        for (uint32_t ss = 0; ss < max_key_length; ss++) {
+          out_keys[i * max_count_per_query * max_key_length + v * max_key_length + ss] =
+              input.keys[(begin + v) * max_key_length + ss];
+        }
+        out_key_lengths[i * max_count_per_query + v] = input.lengths[begin + v];
       }
     }
   }
@@ -208,6 +215,8 @@ struct testing_range_input {
     upper_lengths.free();
     counts.free();
     values.free();
+    out_keys.free();
+    out_key_lengths.free();
   }
 
   testing_input& input;
@@ -218,6 +227,8 @@ struct testing_range_input {
   mapped_vector<size_type> lower_lengths, upper_lengths;
   mapped_vector<size_type> counts;
   mapped_vector<size_type> values;
+  mapped_vector<key_slice_type> out_keys;
+  mapped_vector<size_type> out_key_lengths;
 };
 
 struct TreeParam {
@@ -480,12 +491,17 @@ void test_range(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_len
   uint32_t max_count_per_query = 10;
   mapped_vector<size_type> result_counts(num_queries);
   mapped_vector<value_type> result_values(num_queries * max_count_per_query);
+  mapped_vector<key_slice_type> result_keys(num_queries * max_count_per_query * max_key_length);
+  mapped_vector<size_type> result_key_lengths(num_queries * max_count_per_query);
   testing_input input(num_keys, min_key_length, max_key_length);
   testing_range_input rinput(input, num_queries, max_count_per_query);
   tree->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
-  tree->range(rinput.lower_keys.data(), rinput.lower_lengths.data(), max_key_length, max_count_per_query, num_queries,
-              rinput.upper_keys.data(), rinput.upper_lengths.data(), result_counts.data(), result_values.data());
+  tree->range(rinput.lower_keys.data(), rinput.lower_lengths.data(),
+              max_key_length, max_count_per_query, num_queries,
+              rinput.upper_keys.data(), rinput.upper_lengths.data(),
+              result_counts.data(), result_values.data(),
+              result_keys.data(), result_key_lengths.data());
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   for (std::size_t i = 0; i < num_queries; i++) {
     auto expected_count = rinput.counts[i];
@@ -495,6 +511,14 @@ void test_range(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_len
       auto expected_value = rinput.values[i * max_count_per_query + v];
       auto found_value = result_values[i * max_count_per_query + v];
       ASSERT_EQ(found_value, expected_value);
+      auto expected_length = rinput.out_key_lengths[i * max_count_per_query + v];
+      auto found_length = result_key_lengths[i * max_count_per_query + v];
+      ASSERT_EQ(found_length, expected_length);
+      //for (uint32_t s = 0; s < expected_length; s++) {
+      //  auto expected_key_slice = rinput.out_keys[i * max_count_per_query * max_key_length + v * max_key_length + s];
+      //  auto found_key_slice = result_keys[i * max_count_per_query * max_key_length + v * max_key_length + s];
+      //  ASSERT_EQ(found_key_slice, expected_key_slice);
+      //}
     }
   }
   result_counts.free();

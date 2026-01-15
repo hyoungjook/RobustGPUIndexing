@@ -1198,6 +1198,8 @@ __global__ void masstree_range_kernel(const key_slice_type* lower_keys,
                                       const size_type* upper_key_lengths,
                                       size_type* counts,
                                       value_type* values,
+                                      key_slice_type* out_keys,
+                                      size_type* out_key_lengths,
                                       btree tree,
                                       bool concurrent) {
   auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
@@ -1210,6 +1212,8 @@ __global__ void masstree_range_kernel(const key_slice_type* lower_keys,
   size_type upper_key_length = 0;
   size_type count = 0;
   value_type* value = nullptr;
+  key_slice_type* out_key = nullptr;
+  size_type* out_key_length = nullptr;
   bool to_query = false;
   if (thread_id < num_queries) {
     lower_key = &lower_keys[max_key_length * thread_id];
@@ -1217,6 +1221,8 @@ __global__ void masstree_range_kernel(const key_slice_type* lower_keys,
     upper_key = &upper_keys[max_key_length * thread_id];
     upper_key_length = upper_key_lengths ? upper_key_lengths[thread_id] : max_key_length;
     value = &values[max_count_per_query * thread_id];
+    out_key = &out_keys[max_count_per_query * max_key_length * thread_id];
+    out_key_length = &out_key_lengths[max_count_per_query * thread_id];
     to_query = true;
   }
   using allocator_type = typename btree::device_allocator_context_type;
@@ -1229,6 +1235,8 @@ __global__ void masstree_range_kernel(const key_slice_type* lower_keys,
     auto cur_upper_key = upper_keys ? tile.shfl(upper_key, cur_rank) : nullptr;
     auto cur_upper_key_length = upper_keys ? tile.shfl(upper_key_length, cur_rank) : 0;
     auto cur_value = values ? tile.shfl(value, cur_rank) : nullptr;
+    auto cur_out_key = out_keys ? tile.shfl(out_key, cur_rank) : nullptr;
+    auto cur_out_key_length = out_key_lengths ? tile.shfl(out_key_length, cur_rank) : nullptr;
     auto cur_count = tree.cooperative_range(cur_lower_key,
                                             cur_lower_key_length,
                                             tile,
@@ -1237,6 +1245,9 @@ __global__ void masstree_range_kernel(const key_slice_type* lower_keys,
                                             cur_upper_key_length,
                                             max_count_per_query,
                                             cur_value,
+                                            cur_out_key,
+                                            cur_out_key_length,
+                                            max_key_length,
                                             concurrent);
     if (cur_rank == tile.thread_rank()) {
       count = cur_count;
