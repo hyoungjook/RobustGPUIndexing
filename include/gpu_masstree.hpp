@@ -273,7 +273,12 @@ struct gpu_masstree {
       else if (scan_op == -2) { // go to prev layer
         // pop stack until checkpoint key is not 0xFFFFFFFF
         while (true) {
-          if (layer == 0) { return out_count; }
+          if (layer == 0) {
+            key_slice_stack.destroy();
+            node_index_stack.destroy();
+            ignore_uk_stack.destroy();
+            return out_count;
+          }
           layer--;
           lower_key_slice = key_slice_stack.pop();
           current_node_index = node_index_stack.pop();
@@ -292,6 +297,9 @@ struct gpu_masstree {
       }
       else {
         assert(scan_op == -3);  // end scanning
+        key_slice_stack.destroy();
+        node_index_stack.destroy();
+        ignore_uk_stack.destroy();
         return out_count;
       }
     }
