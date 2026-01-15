@@ -248,6 +248,52 @@ struct masstree_node {
     return true;
   }
 
+  // lexicographic comparisons for key entries
+  DEVICE_QUALIFIER bool cmp_key_lv(const key_type& k1, bool lov1, const key_type& k2, bool lov2) const {
+    return (k1 < k2) || ((k1 == k2) && (static_cast<int>(lov1) <= static_cast<int>(lov2)));
+  }
+  DEVICE_QUALIFIER int scan(const key_type& lower_key,
+                            const bool lower_link_or_value,
+                            const bool ignore_upper_bound,
+                            const key_type& upper_key,
+                            const bool upper_link_or_value,
+                            const size_type out_max_count,
+                            value_type* out_value,
+                            size_type& out_count) const {
+    // return values in range, until we meet the link entry
+    assert(is_border());
+    const bool in_range = is_valid_key_lane() &&
+        cmp_key_lv(lower_key, lower_link_or_value, lane_elem_, link_or_value_) &&
+        (ignore_upper_bound || cmp_key_lv(lane_elem_, link_or_value_, upper_key, upper_link_or_value));
+    const uint32_t in_range_ballot = tile_.ballot(in_range);
+    if (in_range_ballot == 0) { return -1; }
+    const int first_location = __ffs(in_range_ballot) - 1;
+    int last_location = utils::bits::bfind(in_range_ballot) + 1;
+    const bool in_range_and_link = in_range && (link_or_value_ == BORDER_ENTRY_LINK);
+    const uint32_t in_range_and_link_ballot = tile_.ballot(in_range_and_link);
+    int link_entry_location = -1;
+    if (in_range_and_link_ballot != 0) {
+      link_entry_location = __ffs(in_range_and_link_ballot) - 1;
+      last_location = link_entry_location;
+    }
+    // results up to out_max_count
+    int count = last_location - first_location;
+    if (count > out_max_count) {
+      last_location = first_location + out_max_count;
+      count = out_max_count;
+      link_entry_location = -1;
+    }
+    // store results
+    if (out_value != nullptr && count > 0 &&
+        get_value_lane_from_location(first_location) <= tile_.thread_rank() &&
+        tile_.thread_rank() < get_value_lane_from_location(last_location)) {
+      out_value[tile_.thread_rank() - get_value_lane_from_location(first_location)] = lane_elem_;
+    }
+    out_count += count;
+    // return value: location of the link entry. If no link entry in range, return -1.
+    return link_entry_location;
+  }
+
   DEVICE_QUALIFIER int get_split_left_width() const {
     // normally, location is left_half_width_
     // but a value entry and a link entry with the same key should be in the same node
@@ -686,7 +732,7 @@ struct masstree_node {
       elem_type key = tile_.shfl(lane_elem_, get_key_lane_from_location(i));
       elem_type value = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
       bool link_or_value = tile_.shfl(link_or_value_, get_key_lane_from_location(i));
-      if (lead_lane) printf("(%u %u %s) ", key, value, link_or_value ? "$" : ":");
+      if (lead_lane) printf("(%u %u %s) ", key, value, link_or_value == BORDER_ENTRY_VALUE ? "$" : ":");
     }
     if (lead_lane) printf("%s %s ", is_locked() ? "locked" : "unlocked", is_border() ? "border" : "interior");
     elem_type sibling_key = get_high_key();

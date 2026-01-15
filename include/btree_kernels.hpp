@@ -1188,5 +1188,64 @@ __global__ void masstree_test_insert_erase_kernel(const key_slice_type* insert_k
   }
 }
 
+template <typename key_slice_type, typename value_type, typename size_type, typename btree>
+__global__ void masstree_range_kernel(const key_slice_type* lower_keys,
+                                      const size_type* lower_key_lengths,
+                                      const size_type max_key_length,
+                                      const size_type max_count_per_query,
+                                      const size_type num_queries,
+                                      const key_slice_type* upper_keys,
+                                      const size_type* upper_key_lengths,
+                                      size_type* counts,
+                                      value_type* values,
+                                      btree tree,
+                                      bool concurrent) {
+  auto thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+  auto block = cg::this_thread_block();
+  auto tile = cg::tiled_partition<btree::cg_tile_size>(block);
+  if ((thread_id - tile.thread_rank()) >= num_queries) { return; }
+  const key_slice_type* lower_key = nullptr;
+  size_type lower_key_length = 0;
+  const key_slice_type* upper_key = nullptr;
+  size_type upper_key_length = 0;
+  size_type count = 0;
+  value_type* value = nullptr;
+  bool to_query = false;
+  if (thread_id < num_queries) {
+    lower_key = &lower_keys[max_key_length * thread_id];
+    lower_key_length = lower_key_lengths ? lower_key_lengths[thread_id] : max_key_length;
+    upper_key = &upper_keys[max_key_length * thread_id];
+    upper_key_length = upper_key_lengths ? upper_key_lengths[thread_id] : max_key_length;
+    value = &values[max_count_per_query * thread_id];
+    to_query = true;
+  }
+  using allocator_type = typename btree::device_allocator_context_type;
+  allocator_type allocator{tree.allocator_, tile};
+  auto work_queue = tile.ballot(to_query);
+  while (work_queue) {
+    auto cur_rank = __ffs(work_queue) - 1;
+    auto cur_lower_key = tile.shfl(lower_key, cur_rank);
+    auto cur_lower_key_length = tile.shfl(lower_key_length, cur_rank);
+    auto cur_upper_key = upper_keys ? tile.shfl(upper_key, cur_rank) : nullptr;
+    auto cur_upper_key_length = upper_keys ? tile.shfl(upper_key_length, cur_rank) : 0;
+    auto cur_value = values ? tile.shfl(value, cur_rank) : nullptr;
+    auto cur_count = tree.cooperative_range(cur_lower_key,
+                                            cur_lower_key_length,
+                                            tile,
+                                            allocator,
+                                            cur_upper_key,
+                                            cur_upper_key_length,
+                                            max_count_per_query,
+                                            cur_value,
+                                            concurrent);
+    if (cur_rank == tile.thread_rank()) {
+      count = cur_count;
+      to_query = false;
+    }
+    work_queue = tile.ballot(to_query);
+  }
+  if (thread_id < num_queries) { counts[thread_id] = count; }
+}
+
 }  // namespace kernels
 }  // namespace GpuBTree

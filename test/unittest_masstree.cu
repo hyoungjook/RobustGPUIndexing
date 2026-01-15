@@ -61,6 +61,7 @@ struct mapped_vector {
     cuda_try(cudaFreeHost(dh_buffer_));
   }
   T* data() const { return dh_buffer_; }
+  std::size_t size() const { return capacity_; }
 
   std::vector<T> to_std_vector() {
     std::vector<T> copy(capacity_);
@@ -122,6 +123,36 @@ struct testing_input {
     values2.free();
     keys_not_exist.free();
   }
+  void sort() {
+    // decide order
+    std::vector<std::size_t> order(num_keys);
+    for (std::size_t i = 0; i < num_keys; i++) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](const std::size_t& a, const std::size_t& b) {
+      // returns true if a < b
+      const key_slice_type* a_key = &keys[a * max_key_length];
+      const key_slice_type* b_key = &keys[b * max_key_length];
+      const size_type a_length = lengths[a], b_length = lengths[b];
+      return std::lexicographical_compare(a_key, a_key + a_length, b_key, b_key + b_length);
+    });
+    // rearrange
+    mapped_vector<key_slice_type> sorted_keys(keys.size());
+    mapped_vector<size_type> sorted_lengths(lengths.size());
+    mapped_vector<value_type> sorted_values(values.size());
+    for (std::size_t i = 0; i < num_keys; i++) {
+      std::size_t old_i = order[i];
+      for (uint32_t s = 0; s < max_key_length; s++) {
+        sorted_keys[i * max_key_length + s] = keys[old_i * max_key_length + s];
+      }
+      sorted_lengths[i] = lengths[old_i];
+      sorted_values[i] = values[old_i];
+    }
+    keys.free();
+    lengths.free();
+    values.free();
+    keys = sorted_keys;
+    lengths = sorted_lengths;
+    values = sorted_values;
+  }
 
   std::size_t num_keys;
   uint32_t min_key_length;
@@ -131,6 +162,62 @@ struct testing_input {
   mapped_vector<value_type> values;
   mapped_vector<value_type> values2;
   mapped_vector<key_slice_type> keys_not_exist;
+};
+
+struct testing_range_input {
+  testing_range_input(testing_input& input_, uint32_t input_num_queries, uint32_t input_max_count_per_query)
+      : input(input_)
+      , max_key_length(input.max_key_length)
+      , num_queries(input_num_queries)
+      , max_count_per_query(input_max_count_per_query)
+      , lower_keys(num_queries * max_key_length)
+      , upper_keys(num_queries * max_key_length)
+      , lower_lengths(num_queries)
+      , upper_lengths(num_queries)
+      , counts(num_queries)
+      , values(num_queries * max_count_per_query)
+  {
+    input.sort();
+    make_input();
+  }
+  void make_input() {
+    for (uint32_t i = 0; i < num_queries; i++) {
+      uint32_t begin = i % num_keys;
+      size_type count = 1 + (i % (2* max_count_per_query));
+      uint32_t end = begin + count - 1;
+      if (end >= num_keys) { end = num_keys - 1; }
+      count = end - begin + 1;
+      for (uint32_t s = 0; s < max_key_length; s++) {
+        lower_keys[i * max_key_length + s] = input.keys[begin * max_key_length + s];
+      }
+      lower_lengths[i] = input.lengths[begin];
+      for (uint32_t s = 0; s < max_key_length; s++) {
+        upper_keys[i * max_key_length + s] = input.keys[end * max_key_length + s];
+      }
+      upper_lengths[i] = input.lengths[end];
+      counts[i] = min(count, max_count_per_query);
+      for (uint32_t v = 0; v < counts[i]; v++) {
+        values[i * max_count_per_query + v] = input.values[begin + v];
+      }
+    }
+  }
+  void free() {
+    lower_keys.free();
+    upper_keys.free();
+    lower_lengths.free();
+    upper_lengths.free();
+    counts.free();
+    values.free();
+  }
+
+  testing_input& input;
+  uint32_t max_key_length;
+  uint32_t num_queries;
+  uint32_t max_count_per_query;
+  mapped_vector<key_slice_type> lower_keys, upper_keys;
+  mapped_vector<size_type> lower_lengths, upper_lengths;
+  mapped_vector<size_type> counts;
+  mapped_vector<size_type> values;
 };
 
 struct TreeParam {
@@ -385,6 +472,37 @@ void test_concurrentinserterase(btree* tree, uint32_t min_key_length_bytes, uint
   input.free();
 }
 
+template <typename btree>
+void test_range(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
+  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
+  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
+  uint32_t num_queries = num_keys / 2;
+  uint32_t max_count_per_query = 10;
+  mapped_vector<size_type> result_counts(num_queries);
+  mapped_vector<value_type> result_values(num_queries * max_count_per_query);
+  testing_input input(num_keys, min_key_length, max_key_length);
+  testing_range_input rinput(input, num_queries, max_count_per_query);
+  tree->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
+  cuda_try(cudaDeviceSynchronize());
+  tree->range(rinput.lower_keys.data(), rinput.lower_lengths.data(), max_key_length, max_count_per_query, num_queries,
+              rinput.upper_keys.data(), rinput.upper_lengths.data(), result_counts.data(), result_values.data());
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  for (std::size_t i = 0; i < num_queries; i++) {
+    auto expected_count = rinput.counts[i];
+    auto found_count    = result_counts[i];
+    ASSERT_EQ(found_count, expected_count);
+    for (uint32_t v = 0; v < expected_count; v++) {
+      auto expected_value = rinput.values[i * max_count_per_query + v];
+      auto found_value = result_values[i * max_count_per_query + v];
+      ASSERT_EQ(found_value, expected_value);
+    }
+  }
+  result_counts.free();
+  result_values.free();
+  rinput.free();
+  input.free();
+}
+
 #define DECLARE_TESTS_FOR_KEY_LENGTHS(min_length, max_length) \
 TYPED_TEST(BTreeMapTest, Validate##min_length##_##max_length) { \
   validate(this->btree_map_, min_length, max_length); \
@@ -415,6 +533,9 @@ TYPED_TEST(BTreeMapTest, EraseAllTwice##min_length##_##max_length) { \
 } \
 TYPED_TEST(BTreeMapTest, ConcurrentInsertErase##min_length##_##max_length) { \
   test_concurrentinserterase(this->btree_map_, min_length, max_length); \
+} \
+TYPED_TEST(BTreeMapTest, RangeQuery##min_length##_##max_length) { \
+  test_range(this->btree_map_, min_length, max_length); \
 }
 
 DECLARE_TESTS_FOR_KEY_LENGTHS(4, 4)

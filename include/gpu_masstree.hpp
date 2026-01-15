@@ -68,18 +68,6 @@ struct gpu_masstree {
 
   // host-side APIs
   // if key_lengths == NULL, we use max_key_length as a fixed length
-  void insert(const key_slice_type* keys,
-              const size_type max_key_length,
-              const size_type* key_lengths,
-              const value_type* values,
-              const size_type num_keys,
-              cudaStream_t stream = 0,
-              bool update_if_exists = false) {
-    const uint32_t block_size = 512;
-    const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
-    kernels::masstree_insert_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, values, num_keys, *this, update_if_exists);
-  }
-
   void find(const key_slice_type* keys,
             const size_type max_key_length,
             const size_type* key_lengths,
@@ -90,6 +78,34 @@ struct gpu_masstree {
     const uint32_t block_size = 512;
     const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
     kernels::masstree_find_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, values, num_keys, *this, concurrent);
+  }
+
+  void range(const key_slice_type* lower_keys,
+             const size_type* lower_key_lengths,
+             const size_type max_key_length,
+             const size_type max_count_per_query,
+             const size_type num_queries,
+             const key_slice_type* upper_keys = nullptr,
+             const size_type* upper_key_lengths = nullptr,
+             size_type* counts = nullptr,
+             value_type* values = nullptr,
+             cudaStream_t stream = 0,
+             bool concurrent = false) {
+    const uint32_t block_size = 512;
+    const uint32_t num_blocks = (num_queries + block_size - 1) / block_size;
+    kernels::masstree_range_kernel<<<num_blocks, block_size, 0, stream>>>(lower_keys, lower_key_lengths, max_key_length, max_count_per_query, num_queries, upper_keys, upper_key_lengths, counts, values, *this, concurrent);
+  }
+
+  void insert(const key_slice_type* keys,
+              const size_type max_key_length,
+              const size_type* key_lengths,
+              const value_type* values,
+              const size_type num_keys,
+              cudaStream_t stream = 0,
+              bool update_if_exists = false) {
+    const uint32_t block_size = 512;
+    const uint32_t num_blocks = (num_keys + block_size - 1) / block_size;
+    kernels::masstree_insert_kernel<<<num_blocks, block_size, 0, stream>>>(keys, max_key_length, key_lengths, values, num_keys, *this, update_if_exists);
   }
 
   void erase(const key_slice_type* keys,
@@ -162,6 +178,124 @@ struct gpu_masstree {
     }
     // current_node_index has the final value
     return current_node_index;
+  }
+
+  template <typename tile_type>
+  DEVICE_QUALIFIER size_type cooperative_range(const key_slice_type* lower_key,
+                                               const size_type lower_key_length,
+                                               const tile_type& tile,
+                                               device_allocator_context_type& allocator,
+                                               const key_slice_type* upper_key = nullptr,
+                                               const size_type upper_key_length = 1,
+                                               const size_type out_max_count = 1,
+                                               value_type* out_value = nullptr,
+                                               bool concurrent = false) {
+    using node_type = masstree_node<tile_type>;
+    using dynamic_stack_type = utils::dynamic_stack<tile_type, device_allocator_context_type>;
+    if (out_max_count <= 0) { return 0; }
+
+    static constexpr key_slice_type min_key_slice = std::numeric_limits<key_slice_type>::min();
+    static constexpr key_slice_type max_key_slice = std::numeric_limits<key_slice_type>::max();
+    size_type current_node_index = *d_root_index_;
+    size_type layer = 0, out_count = 0;
+    key_slice_type lower_key_slice = lower_key[0];
+    bool lower_key_lv = (lower_key_length > 1);
+    key_slice_type upper_key_slice = upper_key ? upper_key[0] : 0;
+    bool upper_key_lv = (upper_key_length > 1);
+    bool passed_lower_key = false;
+    bool ignore_upper_key = (upper_key == nullptr);
+    dynamic_stack_type key_slice_stack(allocator, tile);
+    dynamic_stack_type node_index_stack(allocator, tile);
+    dynamic_stack_type ignore_uk_stack(allocator, tile);
+    while (true) {
+      // traverse the btree: current_node_index can be root node or border node
+      auto border_node = coop_traverse_until_border(lower_key_slice, current_node_index, tile, allocator, false, concurrent, &current_node_index);
+      // traverse side links, scan the nodes, and decide scan_op:
+      //      >=0 (down-link location; go to next layer)
+      //      -1 (continue side-link traverse)
+      //      -2 (go to previous layer)
+      //      -3 (end scanning the range)
+      int scan_op = -1;
+      while (true) {
+        if (border_node.is_garbage()) { scan_op = -1; }
+        else {
+          scan_op = border_node.scan(lower_key_slice,
+                                     lower_key_lv,
+                                     ignore_upper_key,
+                                     upper_key_slice,
+                                     upper_key_lv,
+                                     out_max_count - out_count,
+                                     out_value + out_count,
+                                     out_count);
+          //  if got enough outputs, end scanning
+          if (out_count >= out_max_count) { scan_op = -3; }
+          else if (scan_op < 0) {
+            // if it's end of this layer, go to prev layer
+            if (!border_node.has_sibling()) { scan_op = (layer == 0) ? -3 : -2; }
+            // if reached upper key, end scanning
+            else if (upper_key_slice <= border_node.get_high_key()) { scan_op = -3; }
+            // else: continue side traversal
+            else { assert(scan_op == -1); }
+          }
+          //  else: found down-link in range, go to next layer
+        }
+        if (scan_op != -1) { break; }
+        current_node_index = border_node.get_sibling_index();
+        border_node = node_type(
+            reinterpret_cast<key_slice_type*>(allocator.address(current_node_index)),
+            current_node_index,
+            tile);
+        if (concurrent) { border_node.load(cuda_memory_order::memory_order_relaxed); }
+        else { border_node.load(); }
+      }
+      // switch layer
+      if (scan_op >= 0) { // go to next layer
+        layer++;
+        // checkpoint key slice and node index to stack
+        const key_slice_type checkpoint_key_slice = border_node.get_key_from_location(scan_op);
+        key_slice_stack.push(checkpoint_key_slice);
+        node_index_stack.push(current_node_index);
+        current_node_index = border_node.get_value_from_location(scan_op);
+        ignore_uk_stack.push(static_cast<size_type>(ignore_upper_key));
+        // check if passed the lower key
+        passed_lower_key = passed_lower_key ||
+            (lower_key_slice < checkpoint_key_slice || layer == lower_key_length);
+        // lower key for next layer
+        lower_key_slice = passed_lower_key ? min_key_slice : lower_key[layer];
+        lower_key_lv = !(passed_lower_key || layer == lower_key_length - 1);
+        // check if ignore the upper key
+        ignore_upper_key = ignore_upper_key ||
+            (checkpoint_key_slice < upper_key_slice || layer == upper_key_length);
+        // upper key for next layer
+        upper_key_slice = ignore_upper_key ? 0 : upper_key[layer];
+        upper_key_lv = (layer != upper_key_length - 1);
+      }
+      else if (scan_op == -2) { // go to prev layer
+        // pop stack until checkpoint key is not 0xFFFFFFFF
+        while (true) {
+          if (layer == 0) { return out_count; }
+          layer--;
+          lower_key_slice = key_slice_stack.pop();
+          current_node_index = node_index_stack.pop();
+          ignore_upper_key = ignore_uk_stack.pop();
+          assert(ignore_upper_key || layer < upper_key_length);
+          if (!ignore_upper_key &&
+              lower_key_slice >= upper_key[layer]) { continue; }
+          if (lower_key_slice < max_key_slice) { break; }
+        }
+        // scan from checkpoint_key, exclusive
+        lower_key_slice++;
+        lower_key_lv = node_type::BORDER_ENTRY_VALUE;
+        upper_key_slice = ignore_upper_key ? 0 : upper_key[layer];
+        upper_key_lv = (layer != upper_key_length - 1);
+        assert(ignore_upper_key || border_node.cmp_key_lv(lower_key_slice, lower_key_lv, upper_key_slice, upper_key_lv));
+      }
+      else {
+        assert(scan_op == -3);  // end scanning
+        return out_count;
+      }
+    }
+    assert(false);
   }
 
   template <typename tile_type>
@@ -371,6 +505,7 @@ struct gpu_masstree {
     return false;
   }
 
+ private:
   // device-side helper functions
   template <typename tile_type>
   DEVICE_QUALIFIER masstree_node<tile_type> coop_traverse_until_border(const key_slice_type& key_slice,
@@ -378,7 +513,8 @@ struct gpu_masstree {
                                                                        const tile_type& tile,
                                                                        device_allocator_context_type& allocator,
                                                                        bool lock_border_node,
-                                                                       bool concurrent) {
+                                                                       bool concurrent,
+                                                                       size_type* node_index = nullptr) {
     // starting from a local root node in a layer, return the border node and its index
     using node_type = masstree_node<tile_type>;
     size_type current_node_index = current_root_index;
@@ -402,6 +538,7 @@ struct gpu_masstree {
             traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
           }
         }
+        if (node_index != nullptr) { *node_index = current_node_index; }
         return current_node;
       }
       else {
@@ -777,6 +914,7 @@ struct gpu_masstree {
     assert(false);
   }
 
+ public:
   // device-side debug functions
   template <typename tile_type>
   DEVICE_QUALIFIER void cooperative_debug_find_varlen_print(
@@ -1067,6 +1205,19 @@ struct gpu_masstree {
                                                                     const size_type erase_keys_count,
                                                                     const size_type max_key_length,
                                                                     btree tree);
+
+  template <typename key_slice_type, typename value_type, typename size_type, typename btree>
+  friend __global__ void kernels::masstree_range_kernel(const key_slice_type* lower_keys,
+                                                        const size_type* lower_key_lengths,
+                                                        const size_type max_key_length,
+                                                        const size_type max_count_per_query,
+                                                        const size_type num_queries,
+                                                        const key_slice_type* upper_keys,
+                                                        const size_type* upper_key_lengths,
+                                                        size_type* counts,
+                                                        value_type* values,
+                                                        btree tree,
+                                                        bool concurrent);
 }; // struct gpu_masstree
 
 } // namespace GPUBTree
