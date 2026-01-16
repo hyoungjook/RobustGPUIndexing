@@ -1255,7 +1255,7 @@ __global__ void masstree_range_kernel(const key_slice_type* lower_keys,
     }
     work_queue = tile.ballot(to_query);
   }
-  if (thread_id < num_queries) { counts[thread_id] = count; }
+  if (counts && thread_id < num_queries) { counts[thread_id] = count; }
 }
 
 }  // namespace kernels

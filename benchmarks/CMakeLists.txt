@@ -8,6 +8,7 @@ set(BENCHMARKS
     concurrent_erase_find_bench
     masstree_insert_find_bench
     masstree_erase_bench
+    masstree_range_bench
 )
 
 foreach(BENCHMARK ${BENCHMARKS})

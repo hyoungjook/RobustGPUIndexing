@@ -277,19 +277,22 @@ struct gpu_masstree {
         key_slice_stack.push(checkpoint_key_slice);
         node_index_stack.push(current_node_index);
         current_node_index = border_node.get_value_from_location(scan_op);
-        ignore_uk_stack.push(static_cast<size_type>(ignore_upper_key));
         // check if passed the lower key
         passed_lower_key = passed_lower_key ||
             (lower_key_slice < checkpoint_key_slice || layer == lower_key_length);
         // lower key for next layer
         lower_key_slice = passed_lower_key ? min_key_slice : lower_key[layer];
         lower_key_lv = !(passed_lower_key || layer == lower_key_length - 1);
-        // check if ignore the upper key
-        ignore_upper_key = ignore_upper_key ||
-            (checkpoint_key_slice < upper_key_slice || layer == upper_key_length);
-        // upper key for next layer
-        upper_key_slice = ignore_upper_key ? 0 : upper_key[layer];
-        upper_key_lv = (layer != upper_key_length - 1);
+        // handle upper key
+        if (upper_key != nullptr) {
+          ignore_uk_stack.push(static_cast<size_type>(ignore_upper_key));
+          // check if ignore the upper key
+          ignore_upper_key = ignore_upper_key ||
+              (checkpoint_key_slice < upper_key_slice || layer == upper_key_length);
+          // upper key for next layer
+          upper_key_slice = ignore_upper_key ? 0 : upper_key[layer];
+          upper_key_lv = (layer != upper_key_length - 1);
+        }
       }
       else if (scan_op == -2) { // go to prev layer
         // pop stack until checkpoint key is not 0xFFFFFFFF
@@ -303,7 +306,7 @@ struct gpu_masstree {
           layer--;
           lower_key_slice = key_slice_stack.pop();
           current_node_index = node_index_stack.pop();
-          ignore_upper_key = ignore_uk_stack.pop();
+          if (upper_key != nullptr) { ignore_upper_key = ignore_uk_stack.pop(); }
           assert(ignore_upper_key || layer < upper_key_length);
           if (!ignore_upper_key &&
               lower_key_slice >= upper_key[layer]) { continue; }
