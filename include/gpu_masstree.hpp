@@ -36,10 +36,12 @@
 #include <dynamic_stack.hpp>
 #include <simple_bump_alloc.hpp>
 #include <simple_slab_alloc.hpp>
+#include <simple_dummy_reclaim.hpp>
 
 namespace GpuMasstree {
 
-template <typename Allocator>
+template <typename Allocator,
+          typename Reclaimer>
 struct gpu_masstree {
   using size_type = uint32_t;
   using elem_type = uint32_t;
@@ -47,7 +49,7 @@ struct gpu_masstree {
   using value_type = elem_type;
   static auto constexpr branching_factor = 16;
   static auto constexpr cg_tile_size = 2 * branching_factor;
-  using masstree_type = gpu_masstree<Allocator>;
+  using masstree_type = gpu_masstree<Allocator, Reclaimer>;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
@@ -55,12 +57,18 @@ struct gpu_masstree {
   using device_allocator_instance_type = typename host_allocator_type::device_instance_type;
   using device_allocator_context_type = device_allocator_context<host_allocator_type>;
 
+  using host_reclaimer_type = Reclaimer;
+  using device_reclaimer_instance_type = typename host_reclaimer_type::device_instance_type;
+  using device_reclaimer_context_type = device_reclaimer_context<host_reclaimer_type>;
+
   gpu_masstree() = delete;
-  gpu_masstree(const host_allocator_type& host_allocator)
-      : allocator_(host_allocator.get_device_instance()) {
+  gpu_masstree(const host_allocator_type& host_allocator,
+               const host_reclaimer_type& host_reclaimer)
+      : allocator_(host_allocator.get_device_instance())
+      , reclaimer_(host_reclaimer.get_device_instance()) {
     allocate();
   }
-  
+
   gpu_masstree(const gpu_masstree& other)
       : d_root_index_(other.d_root_index_)
       , allocator_(other.allocator_) {}
@@ -472,6 +480,7 @@ struct gpu_masstree {
                                           const size_type key_length,
                                           const tile_type& tile,
                                           device_allocator_context_type& allocator,
+                                          device_reclaimer_context_type& reclaimer,
                                           bool concurrent = false) {
     using node_type = masstree_node<tile_type>;
     using dynamic_stack_type = utils::dynamic_stack_u32<1, tile_type, device_allocator_context_type>;
@@ -516,7 +525,7 @@ struct gpu_masstree {
         bool early_exited_ = false;
       } early_exit_check;
       bool border_node_is_root;
-      auto border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_VALUE, current_node_index, border_node_is_root, tile, allocator, early_exit_check);
+      auto border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_VALUE, current_node_index, border_node_is_root, tile, allocator, reclaimer, early_exit_check);
       if (early_exit_check.early_exited_) {
         return false; // key not exists
       }
@@ -533,7 +542,7 @@ struct gpu_masstree {
           key_slice = key[layer];
           per_layer_root_indexes.pop(current_node_index);
           early_exit_check.reset();
-          border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_LINK, current_node_index, border_node_is_root, tile, allocator, early_exit_check);
+          border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_LINK, current_node_index, border_node_is_root, tile, allocator, reclaimer, early_exit_check);
           if (early_exit_check.early_exited_) {
             break; // other warp removed the key
           }
@@ -553,7 +562,7 @@ struct gpu_masstree {
               border_node.store(cuda_memory_order::memory_order_relaxed);
               next_layer_root_node.unlock();
               border_node.unlock();
-              // TODO mark next_layer_root_node to be GCed
+              reclaimer.retire(current_node_index, tile);
             }
             else {
               // other warp changed the root
@@ -772,6 +781,7 @@ struct gpu_masstree {
                                                                              bool& output_node_is_root,
                                                                              const tile_type& tile,
                                                                              device_allocator_context_type& allocator,
+                                                                             device_reclaimer_context_type& reclaimer,
                                                                              EarlyExitCheck& early_exit_check) {
     // starting from a local root node in a layer, return the LOCKED border node and its index
     // proactively merge/borrow underflow nodes while traversal. also the returned border node is not underflow.
@@ -908,7 +918,8 @@ struct gpu_masstree {
             parent_node.store(cuda_memory_order::memory_order_relaxed);
             parent_node.unlock();
             right_sibling_node.unlock();
-            // TODO mark right_sibling_node as to-garbage-collect
+            auto right_sibling_index = plan.sibling_at_left ? current_node_index : plan.sibling_index;
+            reclaimer.retire(right_sibling_index, tile);
             if (plan.sibling_at_left) {
               current_node_index = plan.sibling_index;
               current_node = sibling_node;
@@ -923,8 +934,8 @@ struct gpu_masstree {
             right_sibling_node.store(cuda_memory_order::memory_order_relaxed);
             left_sibling_node.unlock();
             right_sibling_node.unlock();
-            // two sibling nodes are not modified
-            // TODO mark left_sibling_node and right_sibling_node as to-garbage-collect
+            reclaimer.retire(current_node_index, tile);
+            reclaimer.retire(plan.sibling_index, tile);
             current_node_index = current_root_index;
             current_node = parent_node;
           }
@@ -960,7 +971,7 @@ struct gpu_masstree {
             __threadfence();
             parent_node.store(cuda_memory_order::memory_order_relaxed);
             new_sibling_node.unlock();
-            // TODO mark sibling_node to be garbage collected
+            reclaimer.retire(sibling_index, tile);
           }
           parent_node.unlock();
           sibling_node.unlock();
@@ -1271,6 +1282,7 @@ struct gpu_masstree {
   std::shared_ptr<size_type> root_index_;
   size_type* d_root_index_;
   device_allocator_instance_type allocator_;
+  device_reclaimer_instance_type reclaimer_;
 
   template <typename masstree>
   friend __global__ void kernels::initialize_kernel(masstree);

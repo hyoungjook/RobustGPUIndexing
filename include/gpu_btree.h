@@ -16,6 +16,8 @@
 #pragma once
 template <class T>
 struct device_allocator_context {};
+template <class T>
+struct device_reclaimer_context {};
 #include <macros.hpp>
 
 // order matters

@@ -19,6 +19,7 @@
 #define _CG_ABI_EXPERIMENTAL
 #include <cooperative_groups.h>
 #include <macros.hpp>
+#include <simple_dummy_reclaim.hpp>
 
 namespace GpuMasstree {
 namespace kernels {
@@ -26,12 +27,10 @@ namespace cg = cooperative_groups;
 
 template <typename masstree>
 __global__ void initialize_kernel(masstree tree) {
+  using allocator_type = typename masstree::device_allocator_context_type;
   auto block = cg::this_thread_block();
   auto tile  = cg::tiled_partition<masstree::cg_tile_size>(block);
-
-  using allocator_type = typename masstree::device_allocator_context_type;
   allocator_type allocator{tree.allocator_, tile};
-
   tree.allocate_root_node(tile, allocator);
 }
 
@@ -39,12 +38,18 @@ template <typename device_func, typename masstree>
 __global__ void batch_kernel(masstree tree,
                              const device_func func,
                              uint32_t num_requests) {
-  auto block = cg::this_thread_block();
-  auto tile = cg::tiled_partition<masstree::cg_tile_size>(block);
-
   using allocator_type = typename masstree::device_allocator_context_type;
+  using reclaimer_type = typename masstree::device_reclaimer_context_type;
+  __shared__ cg::block_tile_memory<reclaimer_type::block_size_> block_tile_shmem;
+  auto block = cg::this_thread_block(block_tile_shmem);
+  auto tile = cg::tiled_partition<masstree::cg_tile_size>(block);
   allocator_type allocator{tree.allocator_, tile};
-
+  auto block_wide_tile = cg::tiled_partition<reclaimer_type::block_size_>(block);
+  extern __shared__ uint32_t reclaimer_shmem_buffer[];
+  reclaimer_type reclaimer{tree.reclaimer_,
+                           (reclaimer_type::required_shmem_size() > 0) ? &reclaimer_shmem_buffer[0] : nullptr,
+                           gridDim.x,
+                           block_wide_tile};
   uint32_t block_size = blockDim.x;
   uint32_t num_request_blocks = (num_requests + block_size - 1) / block_size;
   uint32_t num_worker_blocks = gridDim.x;
@@ -54,18 +59,80 @@ __global__ void batch_kernel(masstree tree,
     bool task_exists = (thread_id < num_requests);
     typename device_func::dev_regs regs;
     if (task_exists) { regs = func.load(thread_id, tile); }
+    reclaimer.leave_qstate(block_wide_tile, blockIdx.x, allocator);
     auto work_queue = tile.ballot(task_exists);
-    
     while (work_queue) {
       int cur_rank = __ffs(work_queue) - 1;
-      func.exec(tree, regs, tile, allocator, cur_rank);
+      func.exec(tree, regs, tile, allocator, reclaimer, cur_rank);
       if (tile.thread_rank() == cur_rank) { task_exists = false; }
       work_queue = tile.ballot(task_exists);
     }
-
+    reclaimer.enter_qstate(block_wide_tile, blockIdx.x);
     if (thread_id < num_requests) { func.store(regs, thread_id); }
   }
+}
 
+template <typename device_func0, typename device_func1, typename masstree>
+__global__ void batch_concurrent_two_funcs_kernel(masstree tree,
+                                                  const device_func0 func0,
+                                                  uint32_t num_requests0,
+                                                  const device_func1 func1,
+                                                  uint32_t num_requests1) {
+  using allocator_type = typename masstree::device_allocator_context_type;
+  using reclaimer_type = typename masstree::device_reclaimer_context_type;
+  __shared__ cg::block_tile_memory<reclaimer_type::block_size_> block_tile_shmem;
+  auto block = cg::this_thread_block(block_tile_shmem);
+  auto tile = cg::tiled_partition<masstree::cg_tile_size>(block);
+  allocator_type allocator{tree.allocator_, tile};
+  auto block_wide_tile = cg::tiled_partition<reclaimer_type::block_size_>(block);
+  extern __shared__ uint32_t reclaimer_shmem_buffer[];
+  reclaimer_type reclaimer{tree.reclaimer_,
+                           (reclaimer_type::required_shmem_size() > 0) ? &reclaimer_shmem_buffer[0] : nullptr,
+                           gridDim.x,
+                           block_wide_tile};
+  // even'th tile -> do func0, odd'th tile -> do func1
+  // assume num_requests0 ~= num_requests1
+  uint32_t block_size = blockDim.x;
+  uint32_t num_request_tiles = (max(num_requests0, num_requests1) + masstree::cg_tile_size - 1) / masstree::cg_tile_size * 2;
+  uint32_t num_request_blocks = (num_request_tiles * masstree::cg_tile_size + block_size - 1) / block_size;
+  uint32_t num_worker_blocks = gridDim.x;
+  for (uint32_t thread_id = threadIdx.x + blockIdx.x * blockDim.x;
+       thread_id < (num_request_blocks * block_size);
+       thread_id += (num_worker_blocks * block_size)) {
+    uint32_t tile_id = thread_id / masstree::cg_tile_size;
+    uint32_t request_id = (tile_id % 2);
+    uint32_t thread_id_within_request = (tile_id / 2) * masstree::cg_tile_size + tile.thread_rank();
+    if (request_id == 0) {
+      bool task_exists = (thread_id_within_request < num_requests0);
+      typename device_func0::dev_regs regs;
+      if (task_exists) { regs = func0.load(thread_id_within_request, tile); }
+      reclaimer.leave_qstate(block_wide_tile, blockIdx.x, allocator);
+      auto work_queue = tile.ballot(task_exists);
+      while (work_queue) {
+        int cur_rank = __ffs(work_queue) - 1;
+        func0.exec(tree, regs, tile, allocator, reclaimer, cur_rank);
+        if (tile.thread_rank() == cur_rank) { task_exists = false; }
+        work_queue = tile.ballot(task_exists);
+      }
+      reclaimer.enter_qstate(block_wide_tile, blockIdx.x);
+      if (thread_id_within_request < num_requests0) { func0.store(regs, thread_id_within_request); }
+    }
+    else { // request_id == 1
+      bool task_exists = (thread_id_within_request < num_requests1);
+      typename device_func1::dev_regs regs;
+      if (task_exists) { regs = func1.load(thread_id_within_request, tile); }
+      reclaimer.leave_qstate(block_wide_tile, blockIdx.x, allocator);
+      auto work_queue = tile.ballot(task_exists);
+      while (work_queue) {
+        int cur_rank = __ffs(work_queue) - 1;
+        func1.exec(tree, regs, tile, allocator, reclaimer, cur_rank);
+        if (tile.thread_rank() == cur_rank) { task_exists = false; }
+        work_queue = tile.ballot(task_exists);
+      }
+      reclaimer.enter_qstate(block_wide_tile, blockIdx.x);
+      if (thread_id_within_request < num_requests1) { func1.store(regs, thread_id_within_request); }
+    }
+  }
 }
 
 template <typename key_slice_type, typename size_type, typename value_type>
@@ -91,8 +158,8 @@ struct insert_device_func {
       .value = d_values[thread_id]
     };
   }
-  template <typename masstree, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, int cur_rank) const {
+  template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
@@ -123,8 +190,8 @@ struct find_device_func {
       .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length
     };
   }
-  template <typename masstree, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, int cur_rank) const {
+  template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tree.cooperative_find(cur_key, cur_key_length, tile, allocator, concurrent);
@@ -157,11 +224,11 @@ struct erase_device_func {
       .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
     };
   }
-  template <typename masstree, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, int cur_rank) const {
+  template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    tree.cooperative_erase<do_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, concurrent);
+    tree.cooperative_erase<do_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer, concurrent);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
@@ -204,8 +271,8 @@ struct range_device_func {
       .out_key_length = d_out_key_lengths ? &d_out_key_lengths[max_count_per_query * thread_id] : nullptr
     };
   }
-  template <typename masstree, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, int cur_rank) const {
+  template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_lower_key = tile.shfl(regs.lower_key, cur_rank);
     auto cur_lower_key_length = tile.shfl(regs.lower_key_length, cur_rank);
     auto cur_upper_key = tile.shfl(regs.upper_key, cur_rank);
@@ -224,60 +291,6 @@ struct range_device_func {
     if (d_counts) { d_counts[thread_id] = regs.count; }
   }
 };
-
-template <typename device_func0, typename device_func1, typename masstree>
-__global__ void batch_concurrent_two_funcs_kernel(masstree tree,
-                                                  const device_func0 func0,
-                                                  uint32_t num_requests0,
-                                                  const device_func1 func1,
-                                                  uint32_t num_requests1) {
-  auto block = cg::this_thread_block();
-  auto tile = cg::tiled_partition<masstree::cg_tile_size>(block);
-
-  using allocator_type = typename masstree::device_allocator_context_type;
-  allocator_type allocator{tree.allocator_, tile};
-
-  // even'th tile -> do func0, odd'th tile -> do func1
-  // assume num_requests0 ~= num_requests1
-  uint32_t block_size = blockDim.x;
-  uint32_t num_request_tiles = (max(num_requests0, num_requests1) + masstree::cg_tile_size - 1) / masstree::cg_tile_size * 2;
-  uint32_t num_request_blocks = (num_request_tiles * masstree::cg_tile_size + block_size - 1) / block_size;
-  uint32_t num_worker_blocks = gridDim.x;
-  for (uint32_t thread_id = threadIdx.x + blockIdx.x * blockDim.x;
-       thread_id < (num_request_blocks * block_size);
-       thread_id += (num_worker_blocks * block_size)) {
-    uint32_t tile_id = thread_id / masstree::cg_tile_size;
-    uint32_t request_id = (tile_id % 2);
-    uint32_t thread_id_within_request = (tile_id / 2) * masstree::cg_tile_size + tile.thread_rank();
-    if (request_id == 0) {
-      bool task_exists = (thread_id_within_request < num_requests0);
-      typename device_func0::dev_regs regs;
-      if (task_exists) { regs = func0.load(thread_id_within_request, tile); }
-      auto work_queue = tile.ballot(task_exists);
-      while (work_queue) {
-        int cur_rank = __ffs(work_queue) - 1;
-        func0.exec(tree, regs, tile, allocator, cur_rank);
-        if (tile.thread_rank() == cur_rank) { task_exists = false; }
-        work_queue = tile.ballot(task_exists);
-      }
-      if (thread_id_within_request < num_requests0) { func0.store(regs, thread_id_within_request); }
-    }
-    else { // request_id == 1
-      bool task_exists = (thread_id_within_request < num_requests1);
-      typename device_func1::dev_regs regs;
-      if (task_exists) { regs = func1.load(thread_id_within_request, tile); }
-      auto work_queue = tile.ballot(task_exists);
-      while (work_queue) {
-        int cur_rank = __ffs(work_queue) - 1;
-        func1.exec(tree, regs, tile, allocator, cur_rank);
-        if (tile.thread_rank() == cur_rank) { task_exists = false; }
-        work_queue = tile.ballot(task_exists);
-      }
-      if (thread_id_within_request < num_requests1) { func1.store(regs, thread_id_within_request); }
-    }
-  }
-
-}
 
 } // namespace kernels
 } // namespace GpuMasstree

@@ -32,6 +32,7 @@ template <typename BTreeMap>
 struct BTreeMapData {
   using btree_map = BTreeMap;
   using host_allocator = typename BTreeMap::host_allocator_type;
+  using host_reclaimer = typename BTreeMap::host_reclaimer_type;
 };
 
 template <class MapData>
@@ -39,16 +40,19 @@ class BTreeMapTest : public testing::Test {
  protected:
   BTreeMapTest() {
     host_allocator_ = new typename map_data::host_allocator();
-    btree_map_ = new typename map_data::btree_map(*host_allocator_);
+    host_reclaimer_ = new typename map_data::host_reclaimer();
+    btree_map_ = new typename map_data::btree_map(*host_allocator_, *host_reclaimer_);
   }
   ~BTreeMapTest() override {
     //host_allocator_->print_stats();
     delete btree_map_;
     delete host_allocator_;
+    delete host_reclaimer_;
   }
   using map_data = MapData;
   typename map_data::btree_map* btree_map_;
   typename map_data::host_allocator* host_allocator_;
+  typename map_data::host_reclaimer* host_reclaimer_;
 };
 
 template <typename T>
@@ -231,35 +235,13 @@ struct testing_range_input {
   mapped_vector<size_type> out_key_lengths;
 };
 
-struct TreeParam {
-  static constexpr int BranchingFactor = 16;
-};
-struct SlabAllocParam {
-  static constexpr uint32_t NumSuperBlocks  = 4;
-  static constexpr uint32_t NumMemoryBlocks = 1024 * 8;
-  static constexpr uint32_t TileSize        = 2 * TreeParam::BranchingFactor;
-  static constexpr uint32_t SlabSize        = 128;
-};
-using node_type           = GpuBTree::node_type<key_slice_type, value_type, TreeParam::BranchingFactor>;
-using bump_allocator_type = device_bump_allocator<node_type>;
-using slab_allocator_type = device_allocator::SlabAllocLight<node_type,
-                                                             SlabAllocParam::NumSuperBlocks,
-                                                             SlabAllocParam::NumMemoryBlocks,
-                                                             SlabAllocParam::TileSize,
-                                                             SlabAllocParam::SlabSize>;
-
 using simple_bump_alloc_type = simple_bump_allocator<128>;
 using simple_slab_alloc_type = simple_slab_allocator<128>;
+using simple_dummy_reclaim_type = simple_dummy_reclaimer;
 
 typedef testing::Types<
-    //BTreeMapData<
-    //    GpuMasstree::
-    //        gpu_masstree<bump_allocator_type>>,
-    //BTreeMapData<
-    //    GpuMasstree::
-    //        gpu_masstree<slab_allocator_type>>>
-    //BTreeMapData<GpuMasstree::gpu_masstree<simple_bump_alloc_type>>,
-    BTreeMapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type>>>
+    //BTreeMapData<GpuMasstree::gpu_masstree<simple_bump_alloc_type, simple_dummy_reclaim_type>>,
+    BTreeMapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_dummy_reclaim_type>>>
     Implementations;
 
 TYPED_TEST_SUITE(BTreeMapTest, Implementations);
