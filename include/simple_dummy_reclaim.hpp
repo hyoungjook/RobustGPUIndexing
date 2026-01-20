@@ -31,7 +31,6 @@ struct simple_dummy_reclaimer {
   simple_dummy_reclaimer(const simple_dummy_reclaimer& other) = delete;
   simple_dummy_reclaimer& operator=(const simple_dummy_reclaimer& other) = delete;
 
-  uint32_t compute_shmem_requirements() { return 0; }
   device_instance_type get_device_instance() const { return device_instance_type{}; }
 
   static constexpr uint32_t block_size_ = 128;
@@ -55,8 +54,8 @@ struct device_reclaimer_context<simple_dummy_reclaimer> {
   DEVICE_QUALIFIER void retire(const pointer_type& address, const tile_type& tile) noexcept {}
 
   template <typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void leave_qstate(const tile_type& block_wide_tile, int block_id, allocator_type& allocator) noexcept {}
+  DEVICE_QUALIFIER void leave_qstate(const tile_type& block_wide_tile, allocator_type& allocator) noexcept {}
 
   template <typename tile_type>
-  DEVICE_QUALIFIER void enter_qstate(const tile_type& block_wide_tile, int block_id) noexcept {}
+  DEVICE_QUALIFIER void enter_qstate(const tile_type& block_wide_tile) noexcept {}
 };

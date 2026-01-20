@@ -16,7 +16,6 @@
  */
 
 #pragma once
-#include <thrust/device_vector.h>
 #include <bitset>
 #include <cstdint>
 #include <iostream>

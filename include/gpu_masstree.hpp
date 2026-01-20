@@ -37,6 +37,7 @@
 #include <simple_bump_alloc.hpp>
 #include <simple_slab_alloc.hpp>
 #include <simple_dummy_reclaim.hpp>
+#include <simple_debr_reclaim.hpp>
 
 namespace GpuMasstree {
 
@@ -69,11 +70,16 @@ struct gpu_masstree {
     allocate();
   }
 
+  gpu_masstree& operator=(const gpu_masstree& other) = delete;
   gpu_masstree(const gpu_masstree& other)
       : d_root_index_(other.d_root_index_)
-      , allocator_(other.allocator_) {}
+      , is_owner_(false)
+      , allocator_(other.allocator_)
+      , reclaimer_(other.reclaimer_) {}
 
-  ~gpu_masstree() {}
+  ~gpu_masstree() {
+    deallocate();
+  }
 
   // host-side APIs
   // if key_lengths == NULL, we use max_key_length as a fixed length
@@ -1232,10 +1238,16 @@ struct gpu_masstree {
   }
 
   void allocate() {
-    d_root_index_ = cuda_allocator<size_type>().allocate(1);
+    is_owner_ = true;
+    cuda_try(cudaMalloc(&d_root_index_, sizeof(size_type)));
     cuda_try(cudaMemset(d_root_index_, 0x00, sizeof(size_type)));
-    root_index_ = std::shared_ptr<size_type>(d_root_index_, cuda_deleter<size_type>());
     initialize();
+  }
+
+  void deallocate() {
+    if (is_owner_) {
+      cuda_try(cudaFree(d_root_index_));
+    }
   }
 
   void initialize() {
@@ -1247,40 +1259,42 @@ struct gpu_masstree {
 
   template <typename device_func>
   void launch_batch_kernel(const device_func& func, uint32_t num_requests, cudaStream_t stream) {
-    int block_size = 128;
+    int block_size = host_reclaimer_type::block_size_;
+    std::size_t shmem_size = sizeof(uint32_t) * device_reclaimer_context_type::required_shmem_size();
     int num_blocks_per_sm;
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(
       &num_blocks_per_sm,
       kernels::batch_kernel<device_func, masstree_type>,
       block_size,
-      0);
+      shmem_size);
     cudaDeviceProp device_prop;
     cudaGetDeviceProperties(&device_prop, 0);
     uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
-    
-    kernels::batch_kernel<<<num_blocks, block_size, 0, stream>>>(
+
+    kernels::batch_kernel<<<num_blocks, block_size, shmem_size, stream>>>(
         *this, func, num_requests);
   }
 
   template <typename device_func0, typename device_func1>
   void launch_batch_concurrent_two_funcs_kernel(const device_func0& func0, uint32_t num_requests0, const device_func1& func1, uint32_t num_requests1, cudaStream_t stream) {
-    int block_size = 128;
+    int block_size = host_reclaimer_type::block_size_;
+    std::size_t shmem_size = sizeof(uint32_t) * device_reclaimer_context_type::required_shmem_size();
     int num_blocks_per_sm;
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(
       &num_blocks_per_sm,
       kernels::batch_concurrent_two_funcs_kernel<device_func0, device_func1, masstree_type>,
       block_size,
-      0);
+      shmem_size);
     cudaDeviceProp device_prop;
     cudaGetDeviceProperties(&device_prop, 0);
     uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
     
-    kernels::batch_concurrent_two_funcs_kernel<<<num_blocks, block_size, 0, stream>>>(
+    kernels::batch_concurrent_two_funcs_kernel<<<num_blocks, block_size, shmem_size, stream>>>(
         *this, func0, num_requests0, func1, num_requests1);
   }
 
-  std::shared_ptr<size_type> root_index_;
   size_type* d_root_index_;
+  bool is_owner_;
   device_allocator_instance_type allocator_;
   device_reclaimer_instance_type reclaimer_;
 

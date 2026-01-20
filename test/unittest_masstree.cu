@@ -44,7 +44,7 @@ class BTreeMapTest : public testing::Test {
     btree_map_ = new typename map_data::btree_map(*host_allocator_, *host_reclaimer_);
   }
   ~BTreeMapTest() override {
-    //host_allocator_->print_stats();
+    host_allocator_->print_stats();
     delete btree_map_;
     delete host_allocator_;
     delete host_reclaimer_;
@@ -238,10 +238,12 @@ struct testing_range_input {
 using simple_bump_alloc_type = simple_bump_allocator<128>;
 using simple_slab_alloc_type = simple_slab_allocator<128>;
 using simple_dummy_reclaim_type = simple_dummy_reclaimer;
+using simple_debr_reclaim_type = simple_debr_reclaimer<4096>;
 
 typedef testing::Types<
     //BTreeMapData<GpuMasstree::gpu_masstree<simple_bump_alloc_type, simple_dummy_reclaim_type>>,
-    BTreeMapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_dummy_reclaim_type>>>
+    //BTreeMapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_dummy_reclaim_type>>,
+    BTreeMapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debr_reclaim_type>>>
     Implementations;
 
 TYPED_TEST_SUITE(BTreeMapTest, Implementations);
