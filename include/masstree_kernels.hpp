@@ -35,7 +35,7 @@ __global__ void initialize_kernel(masstree tree) {
   tree.allocate_root_node(tile, allocator);
 }
 
-template <typename device_func, typename masstree>
+template <bool do_reclaim, typename device_func, typename masstree>
 __global__ void batch_kernel(masstree tree,
                              const device_func func,
                              uint32_t num_requests) {
@@ -60,7 +60,7 @@ __global__ void batch_kernel(masstree tree,
     bool task_exists = (thread_id < num_requests);
     typename device_func::dev_regs regs;
     if (task_exists) { regs = func.load(thread_id, tile); }
-    reclaimer.leave_qstate(block_wide_tile, allocator);
+    if constexpr (do_reclaim) { reclaimer.leave_qstate(block_wide_tile, allocator); }
     auto work_queue = tile.ballot(task_exists);
     while (work_queue) {
       int cur_rank = __ffs(work_queue) - 1;
@@ -68,12 +68,12 @@ __global__ void batch_kernel(masstree tree,
       if (tile.thread_rank() == cur_rank) { task_exists = false; }
       work_queue = tile.ballot(task_exists);
     }
-    reclaimer.enter_qstate(block_wide_tile);
+    if constexpr (do_reclaim) { reclaimer.enter_qstate(block_wide_tile); }
     if (thread_id < num_requests) { func.store(regs, thread_id); }
   }
 }
 
-template <typename device_func0, typename device_func1, typename masstree>
+template <bool do_reclaim, typename device_func0, typename device_func1, typename masstree>
 __global__ void batch_concurrent_two_funcs_kernel(masstree tree,
                                                   const device_func0 func0,
                                                   uint32_t num_requests0,
@@ -107,7 +107,7 @@ __global__ void batch_concurrent_two_funcs_kernel(masstree tree,
       bool task_exists = (thread_id_within_request < num_requests0);
       typename device_func0::dev_regs regs;
       if (task_exists) { regs = func0.load(thread_id_within_request, tile); }
-      reclaimer.leave_qstate(block_wide_tile, allocator);
+      if constexpr (do_reclaim) { reclaimer.leave_qstate(block_wide_tile, allocator); }
       auto work_queue = tile.ballot(task_exists);
       while (work_queue) {
         int cur_rank = __ffs(work_queue) - 1;
@@ -115,14 +115,14 @@ __global__ void batch_concurrent_two_funcs_kernel(masstree tree,
         if (tile.thread_rank() == cur_rank) { task_exists = false; }
         work_queue = tile.ballot(task_exists);
       }
-      reclaimer.enter_qstate(block_wide_tile);
+      if constexpr (do_reclaim) { reclaimer.enter_qstate(block_wide_tile); }
       if (thread_id_within_request < num_requests0) { func0.store(regs, thread_id_within_request); }
     }
     else { // request_id == 1
       bool task_exists = (thread_id_within_request < num_requests1);
       typename device_func1::dev_regs regs;
       if (task_exists) { regs = func1.load(thread_id_within_request, tile); }
-      reclaimer.leave_qstate(block_wide_tile, allocator);
+      if constexpr (do_reclaim) { reclaimer.leave_qstate(block_wide_tile, allocator); }
       auto work_queue = tile.ballot(task_exists);
       while (work_queue) {
         int cur_rank = __ffs(work_queue) - 1;
@@ -130,7 +130,7 @@ __global__ void batch_concurrent_two_funcs_kernel(masstree tree,
         if (tile.thread_rank() == cur_rank) { task_exists = false; }
         work_queue = tile.ballot(task_exists);
       }
-      reclaimer.enter_qstate(block_wide_tile);
+      if constexpr (do_reclaim) { reclaimer.enter_qstate(block_wide_tile); }
       if (thread_id_within_request < num_requests1) { func1.store(regs, thread_id_within_request); }
     }
   }
@@ -138,6 +138,7 @@ __global__ void batch_concurrent_two_funcs_kernel(masstree tree,
 
 template <typename key_slice_type, typename size_type, typename value_type>
 struct insert_device_func {
+  static constexpr bool reclaim_required = false;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
@@ -171,6 +172,7 @@ struct insert_device_func {
 
 template <typename key_slice_type, typename size_type, typename value_type>
 struct find_device_func {
+  static constexpr bool reclaim_required = false;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
@@ -207,6 +209,7 @@ struct find_device_func {
 
 template <bool do_merge, bool do_remove_empty_root, typename key_slice_type, typename size_type, typename value_type>
 struct erase_device_func {
+  static constexpr bool reclaim_required = true;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
@@ -236,6 +239,7 @@ struct erase_device_func {
 
 template <bool use_upper_key, typename key_slice_type, typename size_type, typename value_type>
 struct range_device_func {
+  static constexpr bool reclaim_required = false;
   // kernel args
   const key_slice_type* d_lower_keys;
   const size_type* d_lower_key_lengths;

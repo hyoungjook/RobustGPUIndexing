@@ -22,7 +22,7 @@
 #include <utils.hpp>
 
 #ifndef NDEBUG
-#define NODE_DEBUG
+//#define NODE_DEBUG
 #endif
 template <typename tile_type>
 struct masstree_node {

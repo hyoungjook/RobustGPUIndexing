@@ -1259,37 +1259,39 @@ struct gpu_masstree {
 
   template <typename device_func>
   void launch_batch_kernel(const device_func& func, uint32_t num_requests, cudaStream_t stream) {
+    static constexpr bool do_reclaim = device_func::reclaim_required;
     int block_size = host_reclaimer_type::block_size_;
     std::size_t shmem_size = sizeof(uint32_t) * device_reclaimer_context_type::required_shmem_size();
     int num_blocks_per_sm;
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(
       &num_blocks_per_sm,
-      kernels::batch_kernel<device_func, masstree_type>,
+      kernels::batch_kernel<do_reclaim, device_func, masstree_type>,
       block_size,
       shmem_size);
     cudaDeviceProp device_prop;
     cudaGetDeviceProperties(&device_prop, 0);
     uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
 
-    kernels::batch_kernel<<<num_blocks, block_size, shmem_size, stream>>>(
+    kernels::batch_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
         *this, func, num_requests);
   }
 
   template <typename device_func0, typename device_func1>
   void launch_batch_concurrent_two_funcs_kernel(const device_func0& func0, uint32_t num_requests0, const device_func1& func1, uint32_t num_requests1, cudaStream_t stream) {
+    static constexpr bool do_reclaim = device_func0::reclaim_required || device_func1::reclaim_required;
     int block_size = host_reclaimer_type::block_size_;
     std::size_t shmem_size = sizeof(uint32_t) * device_reclaimer_context_type::required_shmem_size();
     int num_blocks_per_sm;
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(
       &num_blocks_per_sm,
-      kernels::batch_concurrent_two_funcs_kernel<device_func0, device_func1, masstree_type>,
+      kernels::batch_concurrent_two_funcs_kernel<do_reclaim, device_func0, device_func1, masstree_type>,
       block_size,
       shmem_size);
     cudaDeviceProp device_prop;
     cudaGetDeviceProperties(&device_prop, 0);
     uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
     
-    kernels::batch_concurrent_two_funcs_kernel<<<num_blocks, block_size, shmem_size, stream>>>(
+    kernels::batch_concurrent_two_funcs_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
         *this, func0, num_requests0, func1, num_requests1);
   }
 
@@ -1301,12 +1303,12 @@ struct gpu_masstree {
   template <typename masstree>
   friend __global__ void kernels::initialize_kernel(masstree);
 
-  template <typename device_func, typename masstree>
+  template <bool do_reclaim, typename device_func, typename masstree>
   friend __global__ void kernels::batch_kernel(masstree tree,
                                                const device_func func,
                                                uint32_t num_requests);
 
-  template <typename device_func0, typename device_func1, typename masstree>
+  template <bool do_reclaim, typename device_func0, typename device_func1, typename masstree>
   friend __global__ void kernels::batch_concurrent_two_funcs_kernel(masstree tree,
                                                                     const device_func0 func0,
                                                                     uint32_t num_requests0,

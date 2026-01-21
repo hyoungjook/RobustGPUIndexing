@@ -25,16 +25,33 @@
 #include <memory>
 
 // refactoring of memory_reclaimer.hpp
+#ifndef NDEBUG
+//#define RECLAIMER_DEBUG
+#endif
 
 template <uint32_t buffer_size_per_block = 4096>
 struct simple_debra_reclaimer {
   using size_type = uint32_t;
   using pointer_type = size_type;
+#ifdef RECLAIMER_DEBUG
+  struct debug_stats {
+    unsigned long long num_retires;
+    unsigned long long num_deallocates;
+    unsigned max_bag_size;
+    void print() {
+      printf("simple_debra_reclaimer: retires(%llu) deallocs(%llu) maxbag(%u)\n",
+        num_retires, num_deallocates, max_bag_size);
+    }
+  };
+#endif
   struct device_instance_type {
     size_type* announce_;
     size_type* current_epoch_;
     size_type max_num_blocks_;
     size_type buffer_size_;
+    #ifdef RECLAIMER_DEBUG
+    debug_stats* stats_;
+    #endif
   };
   simple_debra_reclaimer() {
     max_num_blocks_ = compute_max_num_blocks();
@@ -43,16 +60,30 @@ struct simple_debra_reclaimer {
     cuda_try(cudaMalloc(&current_epoch_, sizeof(size_type)));
     cuda_try(cudaMemset(current_epoch_, 0x00, sizeof(size_type)));
     thrust::fill(thrust::device, announce_, announce_ + max_num_blocks_, 0x1);
+    #ifdef RECLAIMER_DEBUG
+    cuda_try(cudaMalloc(&stats_, sizeof(debug_stats)));
+    cuda_try(cudaMemset(stats_, 0, sizeof(debug_stats)));
+    #endif
   }
   ~simple_debra_reclaimer() {
     cuda_try(cudaFree(announce_));
     cuda_try(cudaFree(current_epoch_));
+    #ifdef RECLAIMER_DEBUG
+    debug_stats h_stats;
+    cuda_try(cudaMemcpy(&h_stats, stats_, sizeof(debug_stats), cudaMemcpyDeviceToHost));
+    h_stats.print();
+    cuda_try(cudaFree(stats_));
+    #endif
   }
   simple_debra_reclaimer(const simple_debra_reclaimer& other) = delete;
   simple_debra_reclaimer& operator=(const simple_debra_reclaimer& other) = delete;
 
   device_instance_type get_device_instance() const {
-    return device_instance_type{announce_, current_epoch_, max_num_blocks_, buffer_size_};
+    return device_instance_type{announce_, current_epoch_, max_num_blocks_, buffer_size_
+      #ifdef RECLAIMER_DEBUG
+      , stats_
+      #endif
+    };
   }
 
   static constexpr uint32_t block_size_ = 128;
@@ -70,6 +101,9 @@ private:
   size_type* current_epoch_;
   size_type max_num_blocks_;
   size_type buffer_size_;
+  #ifdef RECLAIMER_DEBUG
+  debug_stats* stats_;
+  #endif
 };
 
 template <uint32_t buffer_size_per_block>
@@ -112,13 +146,18 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
     if (tile.thread_rank() == 0) {
       auto cur_bag = current_bag();
       auto num_in_bag = atomicAdd(count_per_bag() + cur_bag, 1);
+      #ifdef RECLAIMER_DEBUG
+      atomicAdd(&reclaimer_.stats_->num_retires, 1ull);
+      atomicMax(&reclaimer_.stats_->max_bag_size, num_in_bag + 1);
+      #endif
       // if shared memory buffer overflow, store in global memory
       if (num_in_bag >= shmem_size_per_bag_) {
-        assert((num_in_bag - shmem_size_per_bag_) < (buffer_size_per_active_block_ / num_bags_ - 1));
+        auto num_in_gmem = num_in_bag - shmem_size_per_bag_;
+        if (num_in_gmem >= (buffer_size_per_active_block_ / num_bags_)) { asm("trap;"); }  // out of memory in bag
         auto offset = reclaimer_.max_num_blocks_ +
             buffer_size_per_active_block_ * blockIdx.x +
             (buffer_size_per_active_block_ / num_bags_) * cur_bag +
-            (num_in_bag - shmem_size_per_bag_);
+            num_in_gmem;
         cuda_memory<pointer_type>::store(reclaimer_.announce_ + offset, address);
       }
       else {
@@ -153,6 +192,11 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
       uint32_t cur_bag = current_bag();
       cur_bag = (cur_bag + 1) % num_bags_;
       auto total_count = count_per_bag()[cur_bag];
+      #ifdef RECLAIMER_DEBUG
+      if (block_wide_tile.thread_rank() == 0) {
+        atomicAdd(&reclaimer_.stats_->num_deallocates, total_count);
+      }
+      #endif
       // free pointers in shared memory
       auto count_in_shmem = min(total_count, shmem_size_per_bag_);
       for (uint32_t i = block_wide_tile.thread_rank();
