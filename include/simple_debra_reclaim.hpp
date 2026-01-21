@@ -16,8 +16,6 @@
  */
 
 #pragma once
-#include <thrust/execution_policy.h>
-#include <thrust/fill.h>
 #include <host_allocators.hpp>
 #include <macros.hpp>
 #include <cstdint>
@@ -59,7 +57,7 @@ struct simple_debra_reclaimer {
     cuda_try(cudaMalloc(&announce_, sizeof(size_type) * (max_num_blocks_ + buffer_size_)));
     cuda_try(cudaMalloc(&current_epoch_, sizeof(size_type)));
     cuda_try(cudaMemset(current_epoch_, 0x00, sizeof(size_type)));
-    thrust::fill(thrust::device, announce_, announce_ + max_num_blocks_, 0x1);
+    cuda_try(cudaMemset(announce_, 0x00, sizeof(size_type) * max_num_blocks_));
     #ifdef RECLAIMER_DEBUG
     cuda_try(cudaMalloc(&stats_, sizeof(debug_stats)));
     cuda_try(cudaMemset(stats_, 0, sizeof(debug_stats)));
@@ -168,19 +166,18 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
   }
 
   template <typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER void leave_qstate(const tile_type& block_wide_tile, allocator_type& allocator) {
+  DEVICE_QUALIFIER void begin_critical_section(const tile_type& block_wide_tile, allocator_type& allocator) {
     block_wide_tile.sync();
     __threadfence();
 
     // read current epoch
     auto cur_epoch = cuda_memory<size_type>::load(reclaimer_.current_epoch_, cuda_memory_order::memory_order_relaxed);
-    assert((cur_epoch & quiescent_bit_mask_) == 0);
     size_type old_epoch;
-    // atomically unset quiescent bit and set epoch num
+    // atomically set critical bit and set epoch num
     if (block_wide_tile.thread_rank() == 0) {
-      old_epoch = atomicExch(reclaimer_.announce_ + blockIdx.x, cur_epoch);
-      assert((old_epoch & quiescent_bit_mask_) != 0);
-      old_epoch = old_epoch & ~quiescent_bit_mask_;
+      old_epoch = atomicExch(reclaimer_.announce_ + blockIdx.x, cur_epoch | critical_bit_mask_);
+      assert((old_epoch & critical_bit_mask_) == 0);
+      old_epoch = old_epoch;
       if (old_epoch != cur_epoch) {
         epoch_advanced() = true;
       }
@@ -234,13 +231,13 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
          i < rounded_active_blocks;
          i += block_wide_tile.size()) {
       bool is_quiescent = true;
-      size_type epoch = cur_epoch;
+      bool is_epoch_up_to_date = true;
       if (i < num_active_blocks_) {
-        epoch = cuda_memory<size_type>::load(&reclaimer_.announce_[i], cuda_memory_order::memory_order_relaxed);
-        is_quiescent = (epoch & quiescent_bit_mask_) != 0;
-        epoch = (epoch & ~quiescent_bit_mask_);
+        auto epoch = cuda_memory<size_type>::load(&reclaimer_.announce_[i], cuda_memory_order::memory_order_relaxed);
+        is_quiescent = (epoch & critical_bit_mask_) == 0;
+        is_epoch_up_to_date = ((epoch & ~critical_bit_mask_) == cur_epoch);
       }
-      bool advanced = is_quiescent || (epoch == cur_epoch);
+      bool advanced = is_quiescent || is_epoch_up_to_date;
       if (!block_wide_tile.all(advanced)) { return; }
     }
     if (block_wide_tile.thread_rank() == 0) {
@@ -249,10 +246,10 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
   }
 
   template <typename tile_type>
-  DEVICE_QUALIFIER void enter_qstate(const tile_type& block_wide_tile) {
+  DEVICE_QUALIFIER void end_critical_section(const tile_type& block_wide_tile) {
     block_wide_tile.sync();
     if (block_wide_tile.thread_rank() == 0) {
-      atomicOr(reclaimer_.announce_ + blockIdx.x, quiescent_bit_mask_);
+      atomicAnd(reclaimer_.announce_ + blockIdx.x, ~critical_bit_mask_);
     }
     block_wide_tile.sync();
     __threadfence();
@@ -261,7 +258,7 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
 private:
   static constexpr uint32_t num_bags_ = 3;
   static constexpr uint32_t shmem_size_per_bag_ = 128;
-  static constexpr size_type quiescent_bit_mask_ = 0x1;
+  static constexpr size_type critical_bit_mask_ = 0x1;
 
   DEVICE_QUALIFIER pointer_type* limbo_bags() const { return shmem_buffer_; }
   DEVICE_QUALIFIER size_type* count_per_bag() const { return shmem_buffer_ + (shmem_size_per_bag_ * num_bags_); }
