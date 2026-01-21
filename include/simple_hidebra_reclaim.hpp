@@ -37,7 +37,7 @@ struct simple_hidebra_reclaimer {
     unsigned long long num_deallocates;
     unsigned max_bag_size;
     void print() {
-      printf("simple_hidebra_reclaimer: retires(%llu) deallocs(%llu) maxbag(%u)\n",
+      printf("simple_hidebra_reclaimer: retires(%llu) deallocs(%llu) maxbag(%u)",
         num_retires, num_deallocates, max_bag_size);
     }
   };
@@ -65,13 +65,13 @@ struct simple_hidebra_reclaimer {
   }
   ~simple_hidebra_reclaimer() {
     #ifdef RECLAIMER_DEBUG
-    debug_stats h_stats;
+    /*debug_stats h_stats;
     cuda_try(cudaMemcpy(&h_stats, stats_, sizeof(debug_stats), cudaMemcpyDeviceToHost));
     h_stats.print();
     cuda_try(cudaFree(stats_));
     size_type h_final_epoch;
     cuda_try(cudaMemcpy(&h_final_epoch, current_epoch_, sizeof(size_type), cudaMemcpyDeviceToHost));
-    printf("final_epoch(%u)\n", h_final_epoch);
+    printf(" final_epoch(%u)\n", h_final_epoch);*/
     #endif
     cuda_try(cudaFree(announce_));
     cuda_try(cudaFree(current_epoch_));
