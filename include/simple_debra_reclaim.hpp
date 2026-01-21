@@ -294,63 +294,10 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
 
     // if all tiles in the block are up-to-date, update global memory announce array
     if (!tile.all(advanced)) { return; }
-    size_type old_epoch;
-    if (tile.thread_rank() == 0) {
-      old_epoch = atomicExch(reclaimer_.announce_ + blockIdx.x, cur_epoch | critical_bit_mask_);
-      assert((old_epoch & critical_bit_mask_) != 0);
-    }
-    old_epoch = tile.shfl(old_epoch & ~critical_bit_mask_, 0);
-
-    // if this is the tile that updated this block's gmem announce,
-    if (old_epoch == cur_epoch) { return; }
-
-    // reclaim current limbo bag and change current_bag
-    uint32_t cur_bag = current_bag();
-    cur_bag = (cur_bag + 1) % num_bags_;
-    auto total_count = count_per_bag()[cur_bag];
-    #ifdef RECLAIMER_DEBUG
-    if (tile.thread_rank() == 0) {
-      atomicAdd(&reclaimer_.stats_->num_deallocates, total_count);
-    }
-    #endif
-    // free pointers in shared memory
-    auto count_in_shmem = min(total_count, shmem_size_per_bag_);
-    for (uint32_t i = tile.thread_rank(); i < count_in_shmem; i += tile_size_) {
-      auto address = limbo_bags()[cur_bag * shmem_size_per_bag_ + i];
-      allocator.deallocate(address);
-    }
-    // free pointers in global memory
-    if (total_count > shmem_size_per_bag_) {
-      auto count_in_gmem = total_count - shmem_size_per_bag_;
-      auto announce_offset = reclaimer_.max_num_blocks_ +
-            buffer_size_per_active_block_ * blockIdx.x +
-            (buffer_size_per_active_block_ / num_bags_) * cur_bag;
-      for (uint32_t i = tile.thread_rank(); i < count_in_gmem; i += tile_size_) {
-        auto address = reclaimer_.announce_[announce_offset + i];
-        allocator.deallocate(address);
-      }
-    }
-    // reset the counter
-    if (tile.thread_rank() == 0) {
-      count_per_bag()[cur_bag] = 0;
-      current_bag() = cur_bag;
-    }
-
-    // scan announce array and advance epoch if possible
-    auto rounded_active_blocks = (num_active_blocks_ + tile_size_ - 1) / tile_size_ * tile_size_;
-    for (uint32_t i = tile.thread_rank(); i < rounded_active_blocks; i += tile_size_) {
-      bool is_quiescent = true;
-      bool is_epoch_up_to_date = true;
-      if (i < num_active_blocks_) {
-        auto epoch = cuda_memory<size_type>::load(&reclaimer_.announce_[i], cuda_memory_order::memory_order_relaxed);
-        is_quiescent = (epoch & critical_bit_mask_) == 0;
-        is_epoch_up_to_date = ((epoch & ~critical_bit_mask_) == cur_epoch);
-      }
-      bool advanced = is_quiescent || is_epoch_up_to_date;
-      if (!tile.all(advanced)) { return; }
-    }
-    if (tile.thread_rank() == 0) {
-      atomicCAS(reclaimer_.current_epoch_, cur_epoch, cur_epoch + 2);
+    if (try_update_global_announce(tile, cur_epoch, critical_bit_mask_, critical_bit_mask_)) {
+      // if this is the tile that updated gmem announce, do the job
+      reclaim_and_switch_limbo_bag(tile, allocator);
+      scan_announce_and_advance_epoch(tile, cur_epoch);
     }
   }
 
@@ -382,69 +329,82 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
       while (true) {
         // read current epoch
         cur_epoch = cuda_memory<size_type>::load(reclaimer_.current_epoch_, cuda_memory_order::memory_order_relaxed);
-        // update global memory announce array
-        size_type old_epoch;
-        if (tile.thread_rank() == 0) {
-          old_epoch = atomicExch(reclaimer_.announce_ + blockIdx.x, cur_epoch);
-          assert((old_epoch & critical_bit_mask_) == 0);
-        }
-        old_epoch = tile.shfl(old_epoch, 0);
-        // if current_epoch is advanced, proceed
-        if (old_epoch != cur_epoch) { break; }
+        // update global memory announce array, until we succeed
+        if (try_update_global_announce(tile, cur_epoch, 0, 0)) { break; }
       }
 
-      // reclaim current limbo bag and change current_bag
-      uint32_t cur_bag = current_bag();
-      cur_bag = (cur_bag + 1) % num_bags_;
-      auto total_count = count_per_bag()[cur_bag];
-      #ifdef RECLAIMER_DEBUG
-      if (tile.thread_rank() == 0) {
-        atomicAdd(&reclaimer_.stats_->num_deallocates, total_count);
-      }
-      #endif
-      // free pointers in shared memory
-      auto count_in_shmem = min(total_count, shmem_size_per_bag_);
-      for (uint32_t i = tile.thread_rank(); i < count_in_shmem; i += tile_size_) {
-        auto address = limbo_bags()[cur_bag * shmem_size_per_bag_ + i];
-        allocator.deallocate(address);
-      }
-      // free pointers in global memory
-      if (total_count > shmem_size_per_bag_) {
-        auto count_in_gmem = total_count - shmem_size_per_bag_;
-        auto announce_offset = reclaimer_.max_num_blocks_ +
-              buffer_size_per_active_block_ * blockIdx.x +
-              (buffer_size_per_active_block_ / num_bags_) * cur_bag;
-        for (uint32_t i = tile.thread_rank(); i < count_in_gmem; i += tile_size_) {
-          auto address = reclaimer_.announce_[announce_offset + i];
-          allocator.deallocate(address);
-        }
-      }
-      // reset the counter
-      if (tile.thread_rank() == 0) {
-        count_per_bag()[cur_bag] = 0;
-        current_bag() = cur_bag;
-      }
-
-      // scan announce array and advance epoch if possible
-      auto rounded_active_blocks = (num_active_blocks_ + tile_size_ - 1) / tile_size_ * tile_size_;
-      for (uint32_t i = tile.thread_rank(); i < rounded_active_blocks; i += tile_size_) {
-        bool is_quiescent = true;
-        bool is_epoch_up_to_date = true;
-        if (i < num_active_blocks_) {
-          auto epoch = cuda_memory<size_type>::load(&reclaimer_.announce_[i], cuda_memory_order::memory_order_relaxed);
-          is_quiescent = (epoch & critical_bit_mask_) == 0;
-          is_epoch_up_to_date = ((epoch & ~critical_bit_mask_) == cur_epoch);
-        }
-        bool advanced = is_quiescent || is_epoch_up_to_date;
-        if (!tile.all(advanced)) { continue; }
-      }
-      if (tile.thread_rank() == 0) {
-        atomicCAS(reclaimer_.current_epoch_, cur_epoch, cur_epoch + 2);
-      }
+      // do the job
+      reclaim_and_switch_limbo_bag(tile, allocator);
+      scan_announce_and_advance_epoch(tile, cur_epoch);
     }
   }
 
 private:
+  template <typename tile_type>
+  DEVICE_QUALIFIER bool try_update_global_announce(const tile_type& tile, size_type cur_epoch, size_type new_mask, size_type old_mask) {
+    size_type old_epoch;
+    if (tile.thread_rank() == 0) {
+      old_epoch = atomicExch(reclaimer_.announce_ + blockIdx.x, cur_epoch | new_mask);
+      assert((old_epoch & critical_bit_mask_) == old_mask);
+    }
+    old_epoch = tile.shfl(old_epoch & ~old_mask, 0);
+    return (old_epoch != cur_epoch);
+  }
+
+  template <typename tile_type, typename allocator_type>
+  DEVICE_QUALIFIER void reclaim_and_switch_limbo_bag(const tile_type& tile, allocator_type& allocator) {
+    // reclaim current limbo bag and change current_bag
+    uint32_t cur_bag = current_bag();
+    cur_bag = (cur_bag + 1) % num_bags_;
+    auto total_count = count_per_bag()[cur_bag];
+    #ifdef RECLAIMER_DEBUG
+    if (tile.thread_rank() == 0) {
+      atomicAdd(&reclaimer_.stats_->num_deallocates, total_count);
+    }
+    #endif
+    // free pointers in shared memory
+    auto count_in_shmem = min(total_count, shmem_size_per_bag_);
+    for (uint32_t i = tile.thread_rank(); i < count_in_shmem; i += tile_size_) {
+      auto address = limbo_bags()[cur_bag * shmem_size_per_bag_ + i];
+      allocator.deallocate(address);
+    }
+    // free pointers in global memory
+    if (total_count > shmem_size_per_bag_) {
+      auto count_in_gmem = total_count - shmem_size_per_bag_;
+      auto announce_offset = reclaimer_.max_num_blocks_ +
+            buffer_size_per_active_block_ * blockIdx.x +
+            (buffer_size_per_active_block_ / num_bags_) * cur_bag;
+      for (uint32_t i = tile.thread_rank(); i < count_in_gmem; i += tile_size_) {
+        auto address = reclaimer_.announce_[announce_offset + i];
+        allocator.deallocate(address);
+      }
+    }
+    // reset the counter
+    if (tile.thread_rank() == 0) {
+      count_per_bag()[cur_bag] = 0;
+      current_bag() = cur_bag;
+    }
+  }
+
+  template <typename tile_type>
+  DEVICE_QUALIFIER void scan_announce_and_advance_epoch(const tile_type& tile, size_type cur_epoch) {
+    auto rounded_active_blocks = (num_active_blocks_ + tile_size_ - 1) / tile_size_ * tile_size_;
+    for (uint32_t i = tile.thread_rank(); i < rounded_active_blocks; i += tile_size_) {
+      bool is_quiescent = true;
+      bool is_epoch_up_to_date = true;
+      if (i < num_active_blocks_) {
+        auto epoch = cuda_memory<size_type>::load(&reclaimer_.announce_[i], cuda_memory_order::memory_order_relaxed);
+        is_quiescent = (epoch & critical_bit_mask_) == 0;
+        is_epoch_up_to_date = ((epoch & ~critical_bit_mask_) == cur_epoch);
+      }
+      bool advanced = is_quiescent || is_epoch_up_to_date;
+      if (!tile.all(advanced)) { return; }
+    }
+    if (tile.thread_rank() == 0) {
+      atomicCAS(reclaimer_.current_epoch_, cur_epoch, cur_epoch + 2);
+    }
+  }
+
   static constexpr uint32_t num_bags_ = 3;
   static constexpr uint32_t shmem_size_per_bag_ = 128;
   static constexpr size_type critical_bit_mask_ = 0x1;
