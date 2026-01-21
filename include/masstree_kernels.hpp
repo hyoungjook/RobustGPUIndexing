@@ -60,15 +60,17 @@ __global__ void batch_kernel(masstree tree,
     bool task_exists = (thread_id < num_requests);
     typename device_func::dev_regs regs;
     if (task_exists) { regs = func.load(thread_id, tile); }
-    if constexpr (do_reclaim) { reclaimer.begin_critical_section(block_wide_tile, allocator); }
+    if constexpr (do_reclaim) { reclaimer.begin_critical_section_block(block_wide_tile, allocator); }
     auto work_queue = tile.ballot(task_exists);
     while (work_queue) {
       int cur_rank = __ffs(work_queue) - 1;
+      if constexpr (do_reclaim) { reclaimer.begin_critical_section_tile(block_wide_tile, tile, allocator); }
       func.exec(tree, regs, tile, allocator, reclaimer, cur_rank);
+      if constexpr (do_reclaim) { reclaimer.end_critical_section_tile(block_wide_tile, tile); }
       if (tile.thread_rank() == cur_rank) { task_exists = false; }
       work_queue = tile.ballot(task_exists);
     }
-    if constexpr (do_reclaim) { reclaimer.end_critical_section(block_wide_tile); }
+    if constexpr (do_reclaim) { reclaimer.end_critical_section_block(block_wide_tile); }
     if (thread_id < num_requests) { func.store(regs, thread_id); }
   }
 }
@@ -107,30 +109,34 @@ __global__ void batch_concurrent_two_funcs_kernel(masstree tree,
       bool task_exists = (thread_id_within_request < num_requests0);
       typename device_func0::dev_regs regs;
       if (task_exists) { regs = func0.load(thread_id_within_request, tile); }
-      if constexpr (do_reclaim) { reclaimer.begin_critical_section(block_wide_tile, allocator); }
+      if constexpr (do_reclaim) { reclaimer.begin_critical_section_block(block_wide_tile, allocator); }
       auto work_queue = tile.ballot(task_exists);
       while (work_queue) {
         int cur_rank = __ffs(work_queue) - 1;
+        if constexpr (do_reclaim) { reclaimer.begin_critical_section_tile(block_wide_tile, tile); }
         func0.exec(tree, regs, tile, allocator, reclaimer, cur_rank);
+        if constexpr (do_reclaim) { reclaimer.end_critical_section_tile(block_wide_tile, tile); }
         if (tile.thread_rank() == cur_rank) { task_exists = false; }
         work_queue = tile.ballot(task_exists);
       }
-      if constexpr (do_reclaim) { reclaimer.end_critical_section(block_wide_tile); }
+      if constexpr (do_reclaim) { reclaimer.end_critical_section_block(block_wide_tile); }
       if (thread_id_within_request < num_requests0) { func0.store(regs, thread_id_within_request); }
     }
     else { // request_id == 1
       bool task_exists = (thread_id_within_request < num_requests1);
       typename device_func1::dev_regs regs;
       if (task_exists) { regs = func1.load(thread_id_within_request, tile); }
-      if constexpr (do_reclaim) { reclaimer.begin_critical_section(block_wide_tile, allocator); }
+      if constexpr (do_reclaim) { reclaimer.begin_critical_section_block(block_wide_tile, allocator); }
       auto work_queue = tile.ballot(task_exists);
       while (work_queue) {
         int cur_rank = __ffs(work_queue) - 1;
+        if constexpr (do_reclaim) { reclaimer.begin_critical_section_tile(block_wide_tile, tile); }
         func1.exec(tree, regs, tile, allocator, reclaimer, cur_rank);
+        if constexpr (do_reclaim) { reclaimer.end_critical_section_tile(block_wide_tile, tile); }
         if (tile.thread_rank() == cur_rank) { task_exists = false; }
         work_queue = tile.ballot(task_exists);
       }
-      if constexpr (do_reclaim) { reclaimer.end_critical_section(block_wide_tile); }
+      if constexpr (do_reclaim) { reclaimer.end_critical_section_block(block_wide_tile); }
       if (thread_id_within_request < num_requests1) { func1.store(regs, thread_id_within_request); }
     }
   }
