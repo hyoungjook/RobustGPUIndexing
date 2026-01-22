@@ -37,7 +37,7 @@ struct simple_debra_reclaimer {
     unsigned long long num_deallocates;
     unsigned max_bag_size;
     void print() {
-      printf("simple_debra_reclaimer: retires(%llu) deallocs(%llu) maxbag(%u)\n",
+      printf("simple_debra_reclaimer: retires(%llu) deallocs(%llu) maxbag(%u)",
         num_retires, num_deallocates, max_bag_size);
     }
   };
@@ -71,7 +71,7 @@ struct simple_debra_reclaimer {
     cuda_try(cudaFree(stats_));
     size_type h_final_epoch;
     cuda_try(cudaMemcpy(&h_final_epoch, current_epoch_, sizeof(size_type), cudaMemcpyDeviceToHost));
-    printf("final_epoch(%u)\n", h_final_epoch);
+    printf(" final_epoch(%u)\n", h_final_epoch);
     #endif
     cuda_try(cudaFree(announce_));
     cuda_try(cudaFree(current_epoch_));
@@ -171,72 +171,11 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
     block.sync();
     __threadfence();
 
-    // read current epoch
     auto cur_epoch = cuda_memory<size_type>::load(reclaimer_.current_epoch_, cuda_memory_order::memory_order_relaxed);
-    bool epoch_advanced;
-    // atomically set critical bit and set epoch num
-    if (block.thread_rank() == 0) {
-      auto old_epoch = atomicExch(reclaimer_.announce_ + blockIdx.x, cur_epoch | critical_bit_mask_);
-      assert((old_epoch & critical_bit_mask_) == 0);
-      if (old_epoch != cur_epoch) {
-        epoch_advanced = true;
-      }
+    if (try_update_global_announce(block, cur_epoch, critical_bit_mask_, 0)) {
+      reclaim_and_switch_limbo_bag(block, allocator);
     }
-    epoch_advanced = block.shfl(epoch_advanced, 0);
-
-    // if advancing epoch, 
-    if (epoch_advanced) {
-      // reclaim current limbo bag and change cur_bag
-      uint32_t cur_bag = current_bag();
-      cur_bag = (cur_bag + 1) % num_bags_;
-      auto total_count = count_per_bag()[cur_bag];
-      #ifdef RECLAIMER_DEBUG
-      if (block.thread_rank() == 0) {
-        atomicAdd(&reclaimer_.stats_->num_deallocates, total_count);
-      }
-      #endif
-      // free pointers in shared memory
-      auto count_in_shmem = min(total_count, shmem_size_per_bag_);
-      for (uint32_t i = block.thread_rank(); i < count_in_shmem; i += block_size_) {
-        auto address = limbo_bags()[cur_bag * shmem_size_per_bag_ + i];
-        allocator.deallocate(address);
-      }
-      // free pointers in global memory
-      if (total_count >= shmem_size_per_bag_) {
-        auto count_in_gmem = total_count - shmem_size_per_bag_;
-        auto announce_offset = reclaimer_.max_num_blocks_ +
-              buffer_size_per_active_block_ * blockIdx.x +
-              (buffer_size_per_active_block_ / num_bags_) * cur_bag;
-        for (uint32_t i = block.thread_rank(); i < count_in_gmem; i += block_size_) {
-          auto address = reclaimer_.announce_[announce_offset + i];
-          allocator.deallocate(address);
-        }
-      }
-      block.sync();
-      // reset the counter
-      if (block.thread_rank() == 0) {
-        count_per_bag()[cur_bag] = 0;
-        current_bag() = cur_bag;
-      }
-      block.sync();
-    }
-
-    // scan announce array and advance epoch
-    auto rounded_active_blocks = (num_active_blocks_ + block_size_ - 1) / block_size_ * block_size_;
-    for (uint32_t i = block.thread_rank(); i < rounded_active_blocks; i += block_size_) {
-      bool is_quiescent = true;
-      bool is_epoch_up_to_date = true;
-      if (i < num_active_blocks_) {
-        auto epoch = cuda_memory<size_type>::load(&reclaimer_.announce_[i], cuda_memory_order::memory_order_relaxed);
-        is_quiescent = (epoch & critical_bit_mask_) == 0;
-        is_epoch_up_to_date = ((epoch & ~critical_bit_mask_) == cur_epoch);
-      }
-      bool advanced = is_quiescent || is_epoch_up_to_date;
-      if (!block.all(advanced)) { return; }
-    }
-    if (block.thread_rank() == 0) {
-      atomicCAS(reclaimer_.current_epoch_, cur_epoch, cur_epoch + 2);
-    }
+    scan_announce_and_advance_epoch(block, cur_epoch);
   }
 
   template <typename block_type>
@@ -258,7 +197,7 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
 
   template <typename block_type, typename tile_type, typename allocator_type>
   DEVICE_QUALIFIER void drain_all(const block_type& block, const tile_type& tile, allocator_type& allocator) {
-    // only one tile is required, exit the rest
+    // only one tile is required, exit the rest to free hardware resource
     if (block.thread_rank() >= tile_size_) { return; }
     while (true) {
       // check all bags are empty
@@ -281,13 +220,15 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
 private:
   template <typename tile_type>
   DEVICE_QUALIFIER bool try_update_global_announce(const tile_type& tile, size_type cur_epoch, size_type new_mask, size_type old_mask) {
-    size_type old_epoch;
+    bool epoch_advanced = false;
     if (tile.thread_rank() == 0) {
-      old_epoch = atomicExch(reclaimer_.announce_ + blockIdx.x, cur_epoch | new_mask);
+      auto old_epoch = atomicExch(reclaimer_.announce_ + blockIdx.x, cur_epoch | new_mask);
       assert((old_epoch & critical_bit_mask_) == old_mask);
+      if ((old_epoch & ~old_mask) != cur_epoch) {
+        epoch_advanced = true;
+      }
     }
-    old_epoch = tile.shfl(old_epoch & ~old_mask, 0);
-    return (old_epoch != cur_epoch);
+    return tile.shfl(epoch_advanced, 0);
   }
 
   template <typename tile_type, typename allocator_type>
@@ -303,7 +244,7 @@ private:
     #endif
     // free pointers in shared memory
     auto count_in_shmem = min(total_count, shmem_size_per_bag_);
-    for (uint32_t i = tile.thread_rank(); i < count_in_shmem; i += tile_size_) {
+    for (uint32_t i = tile.thread_rank(); i < count_in_shmem; i += tile.size()) {
       auto address = limbo_bags()[cur_bag * shmem_size_per_bag_ + i];
       allocator.deallocate(address);
     }
@@ -313,22 +254,24 @@ private:
       auto announce_offset = reclaimer_.max_num_blocks_ +
             buffer_size_per_active_block_ * blockIdx.x +
             (buffer_size_per_active_block_ / num_bags_) * cur_bag;
-      for (uint32_t i = tile.thread_rank(); i < count_in_gmem; i += tile_size_) {
+      for (uint32_t i = tile.thread_rank(); i < count_in_gmem; i += tile.size()) {
         auto address = reclaimer_.announce_[announce_offset + i];
         allocator.deallocate(address);
       }
     }
+    tile.sync();
     // reset the counter
     if (tile.thread_rank() == 0) {
       count_per_bag()[cur_bag] = 0;
       current_bag() = cur_bag;
     }
+    tile.sync();
   }
 
   template <typename tile_type>
   DEVICE_QUALIFIER void scan_announce_and_advance_epoch(const tile_type& tile, size_type cur_epoch) {
-    auto rounded_active_blocks = (num_active_blocks_ + tile_size_ - 1) / tile_size_ * tile_size_;
-    for (uint32_t i = tile.thread_rank(); i < rounded_active_blocks; i += tile_size_) {
+    auto rounded_active_blocks = (num_active_blocks_ + tile.size() - 1) / tile.size() * tile.size();
+    for (uint32_t i = tile.thread_rank(); i < rounded_active_blocks; i += tile.size()) {
       bool is_quiescent = true;
       bool is_epoch_up_to_date = true;
       if (i < num_active_blocks_) {
@@ -348,7 +291,6 @@ private:
   static constexpr uint32_t shmem_size_per_bag_ = 128;
   static constexpr size_type critical_bit_mask_ = 0x1;
   static constexpr uint32_t tile_size_ = 32;
-  static constexpr uint32_t tiles_per_block_ = block_size_ / tile_size_;
 
   DEVICE_QUALIFIER pointer_type* limbo_bags() const { return shmem_buffer_; }
   DEVICE_QUALIFIER size_type* count_per_bag() const { return shmem_buffer_ + (shmem_size_per_bag_ * num_bags_); }
