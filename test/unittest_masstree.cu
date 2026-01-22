@@ -238,12 +238,12 @@ struct testing_range_input {
 using simple_bump_alloc_type = simple_bump_allocator<128>;
 using simple_slab_alloc_type = simple_slab_allocator<128>;
 using simple_dummy_reclaim_type = simple_dummy_reclaimer;
-using simple_hidebra_reclaim_type = simple_hidebra_reclaimer<>;
+using simple_debra_reclaim_type = simple_debra_reclaimer<>;
 
 typedef testing::Types<
     //BTreeMapData<GpuMasstree::gpu_masstree<simple_bump_alloc_type, simple_dummy_reclaim_type>>,
     //BTreeMapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_dummy_reclaim_type>>,
-    BTreeMapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_hidebra_reclaim_type>>>
+    BTreeMapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type>>>
     Implementations;
 
 TYPED_TEST_SUITE(BTreeMapTest, Implementations);

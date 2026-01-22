@@ -142,7 +142,7 @@ struct masstree_node {
     return (num_keys() <= underflow_num_keys_);
   }
   DEVICE_QUALIFIER bool is_mergeable(const masstree_node& sibling_node) const {
-    return (num_keys() + sibling_node.num_keys()) <= (is_border() ? border_max_num_keys_ : interior_max_num_keys_);
+    return (num_keys() + sibling_node.num_keys()) < (is_border() ? border_max_num_keys_ : interior_max_num_keys_);
   }
   DEVICE_QUALIFIER bool is_garbage() const {
     return static_cast<bool>(metadata_ & garbage_bit_mask_);
@@ -207,18 +207,16 @@ struct masstree_node {
   }
   DEVICE_QUALIFIER value_type find_next(const key_type& key) const {
     auto next_location = find_next_location(key);
-    return tile_.shfl(lane_elem_, get_value_lane_from_location(next_location));
+    return get_value_from_location(next_location);
   }
   DEVICE_QUALIFIER bool key_is_in_upperhalf(const key_type& pivot_key, const key_type& key) const {
     return (pivot_key < key);
   }
   DEVICE_QUALIFIER value_type find_next_and_sibling(const key_type& key, value_type& sibling_index, bool& sibling_at_left) const {
     auto next_location = find_next_location(key);
-    // same decision with get_merge_plan()
-    sibling_at_left = (next_location >= num_keys() - 1);
-    sibling_index = tile_.shfl(lane_elem_, get_value_lane_from_location(
-        next_location + (sibling_at_left ? -1 : 1)));
-    return tile_.shfl(lane_elem_, get_value_lane_from_location(next_location));
+    sibling_at_left = decide_merge_left(next_location);
+    sibling_index = get_value_from_location(next_location + (sibling_at_left ? -1 : 1));
+    return get_value_from_location(next_location);
   }
 
   DEVICE_QUALIFIER uint32_t match_key_in_node(const key_type& key, bool link_or_value) const {
@@ -504,24 +502,21 @@ struct masstree_node {
     int left_location;
     bool sibling_at_left;
   };
+  DEVICE_QUALIFIER bool decide_merge_left(int location) const {
+    // prioritize merge_left b/c borrow_right incurs additional malloc
+    bool merge_with_left_sibling = (location > 0);
+    return merge_with_left_sibling;
+  }
   DEVICE_QUALIFIER merge_plan get_merge_plan(const value_type& child_index) const {
     static_assert(underflow_num_keys_ >= 2);
     assert(num_keys() >= 2);
     auto ptr_exist = match_ptr_in_node(child_index);
     if (ptr_exist == 0) return {0, -1, false};
     merge_plan plan;
-    plan.left_location = __ffs(ptr_exist) - (1 + node_width);
-    plan.sibling_at_left = false;
-    if (plan.left_location < num_keys() - 1) {
-      // use right sibling
-      plan.sibling_index = get_value_from_location(plan.left_location + 1);
-    }
-    else {
-      // use left sibling
-      plan.left_location--;
-      plan.sibling_index = get_value_from_location(plan.left_location);
-      plan.sibling_at_left = true;
-    }
+    int child_location = __ffs(ptr_exist) - (1 + node_width);
+    plan.sibling_at_left = decide_merge_left(child_location);
+    plan.left_location = child_location - (plan.sibling_at_left ? 1 : 0);
+    plan.sibling_index = get_value_from_location(child_location + (plan.sibling_at_left ? -1 : 1));
     return plan;
   }
 

@@ -38,7 +38,6 @@
 #include <simple_slab_alloc.hpp>
 #include <simple_dummy_reclaim.hpp>
 #include <simple_debra_reclaim.hpp>
-#include <simple_hidebra_reclaim.hpp>
 
 namespace GpuMasstree {
 
@@ -858,16 +857,16 @@ struct gpu_masstree {
         auto sibling_node = node_type(
             reinterpret_cast<elem_type*>(allocator.address(sibling_index)), sibling_index, tile);
         if (sibling_at_left) {
-          // if sibling is at left, use try_lock and retry to avoid deadlock
+          sibling_node.lock();
+        }
+        else {
+          // global lock order: right -> left; use try_lock to avoid deadlock
           if (!sibling_node.try_lock()) {
             current_node.unlock();
             current_node_index = parent_index;
             sibling_index = current_root_index;
             continue;
           }
-        }
-        else {
-          sibling_node.lock();
         }
         sibling_node.load(cuda_memory_order::memory_order_relaxed);
         // check sibling validity
@@ -1215,8 +1214,8 @@ struct gpu_masstree {
       node_index = node.get_sibling_index();
       node_type sibling_node =
           node_type(reinterpret_cast<key_slice_type*>(allocator.address(node_index)), node_index, tile);
-      sibling_node.lock();
       node.unlock();
+      sibling_node.lock();
       node = sibling_node;
       node.load(cuda_memory_order::memory_order_relaxed);
       traversed |= true;

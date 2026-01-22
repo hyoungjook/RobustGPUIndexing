@@ -65,6 +65,7 @@ bench_rates bench_masstree_insertion_erase(thrust::device_vector<key_slice_type>
                                            thrust::device_vector<size_type>& d_query_lengths,
                                            uint32_t num_keys,
                                            uint32_t max_key_length,
+                                           float erase_ratio,
                                            std::size_t num_experiments) {
   cudaStream_t insertion_stream{0};
   cudaStream_t erase_stream{0};
@@ -91,12 +92,13 @@ bench_rates bench_masstree_insertion_erase(thrust::device_vector<key_slice_type>
     average_insertion_seconds += insertion_elapsed;
 
     gpu_timer erase_timer(erase_stream);
+    uint32_t num_erase = (uint32_t)(((float)num_keys) * erase_ratio);
     erase_timer.start_timer();
     if constexpr (use_masstree) {
-      tree.erase(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_keys, erase_stream, do_remove_empty_root, do_merge, (do_remove_empty_root || do_merge));
+      tree.erase(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase, erase_stream, do_remove_empty_root, do_merge, (do_remove_empty_root || do_merge));
     }
     else {
-      tree.erase(d_query_keys.data().get(), num_keys, erase_stream);
+      tree.erase(d_query_keys.data().get(), num_erase, erase_stream);
     }
     erase_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
@@ -110,7 +112,7 @@ bench_rates bench_masstree_insertion_erase(thrust::device_vector<key_slice_type>
   average_insertion_seconds /= float(num_experiments);
   average_erase_seconds /= float(num_experiments);
   float insertion_rate = float(d_lengths.size()) / 1e6 / average_insertion_seconds;
-  float erase_rate      = float(d_query_lengths.size()) / 1e6 / average_erase_seconds;
+  float erase_rate      = float(d_query_lengths.size()) * erase_ratio / 1e6 / average_erase_seconds;
   std::cout << "insertion_rate: " << insertion_rate << '\n';
   std::cout << "erase_rate: " << erase_rate << std::endl;
   return {insertion_rate, erase_rate};
@@ -123,6 +125,7 @@ int main(int argc, char** argv) {
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
+  float erase_ratio = get_arg_value<float>(arguments, "erase-ratio").value_or(0.1f);
   bool test_blink = get_arg_value<bool>(arguments, "test-blink").value_or(false);
   std::string dataset_file = get_arg_value<std::string>(arguments, "dataset-file").value_or("");
   std::size_t num_experiments =
@@ -235,48 +238,41 @@ int main(int argc, char** argv) {
   using simple_bump_alloc_type = simple_bump_allocator<128>;
   using simple_slab_alloc_type = simple_slab_allocator<128>;
   using simple_dummy_reclaim_type = simple_dummy_reclaimer;
-  using simple_debra_reclaim_type = simple_debra_reclaimer<>;
-  using simple_hidebra_reclaim_type = simple_hidebra_reclaimer<>;
+  using simple_debra_reclaim_type = simple_debra_reclaimer<131072>;
   using masstree_slab_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_dummy_reclaim_type>;
   using masstree_slab_debra_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type>;
-  using masstree_slab_hidebra_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_hidebra_reclaim_type>;
 
   using slab_allocator_type_blink = device_allocator::SlabAllocLight<node_type, 4, 1024 * 8, 16, 128>;
   using blink_tree_slab_type =
       GpuBTree::gpu_blink_tree<key_slice_type, value_type, branching_factor, slab_allocator_type_blink>;
 
   {
-    std::cout << "Benchmarking masstree_slab_type erase" << std::endl;
-    bench_masstree_insertion_erase<masstree_slab_type, true, false, false>(
+    std::cout << "Benchmarking masstree_slab_debra_type erase" << std::endl;
+    bench_masstree_insertion_erase<masstree_slab_debra_type, true, false, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-      num_keys, max_key_length, num_experiments
+      num_keys, max_key_length, erase_ratio, num_experiments
     );
-    std::cout << "Benchmarking masstree_slab_type erase_merge" << std::endl;
-    bench_masstree_insertion_erase<masstree_slab_type, true, true, false>(
+    std::cout << "Benchmarking masstree_slab_debra_type erase_merge" << std::endl;
+    bench_masstree_insertion_erase<masstree_slab_debra_type, true, true, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-      num_keys, max_key_length, num_experiments
-    );
-    std::cout << "Benchmarking masstree_slab_type erase_merge_rmroot" << std::endl;
-    bench_masstree_insertion_erase<masstree_slab_type, true, true, true>(
-      d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-      num_keys, max_key_length, num_experiments
+      num_keys, max_key_length, erase_ratio, num_experiments
     );
     std::cout << "Benchmarking masstree_slab_debra_type erase_merge_rmroot" << std::endl;
     bench_masstree_insertion_erase<masstree_slab_debra_type, true, true, true>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-      num_keys, max_key_length, num_experiments
+      num_keys, max_key_length, erase_ratio, num_experiments
     );
-    std::cout << "Benchmarking masstree_slab_hidebra_type erase_merge_rmroot" << std::endl;
-    bench_masstree_insertion_erase<masstree_slab_hidebra_type, true, true, true>(
+    std::cout << "Benchmarking masstree_slab_type erase_merge_rmroot" << std::endl;
+    bench_masstree_insertion_erase<masstree_slab_type, true, true, true>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-      num_keys, max_key_length, num_experiments
+      num_keys, max_key_length, erase_ratio, num_experiments
     );
   }
   if (test_blink && max_key_length == 1) {
     std::cout << "Benchmarking blink_tree_slab_type" << std::endl;
     bench_masstree_insertion_erase<blink_tree_slab_type, false, false, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-      num_keys, max_key_length, num_experiments
+      num_keys, max_key_length, erase_ratio, num_experiments
     );
   }
 }

@@ -277,11 +277,6 @@ int main(int argc, char** argv) {
       GpuBTree::gpu_blink_tree<key_slice_type, value_type, branching_factor, slab_allocator_type_blink>;
 
   {
-    std::cout << "Benchmarking masstree_slab_type" << std::endl;
-    bench_masstree_insertion_find<masstree_slab_type, true, false>(
-      d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-      num_keys, max_key_length, num_experiments, validate_result, validate_tree
-    );
     std::cout << "Benchmarking masstree_slab_reclaim_type" << std::endl;
     bench_masstree_insertion_find<masstree_slab_reclaim_type, true, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,

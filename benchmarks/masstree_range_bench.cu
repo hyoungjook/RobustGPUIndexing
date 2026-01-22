@@ -116,7 +116,7 @@ bench_rates bench_masstree_range_query(thrust::device_vector<key_slice_type>& d_
   float insertion_rate = float(d_lengths.size()) / 1e6 / average_insertion_seconds;
   float successor_rate      = float(d_query_lengths.size()) / 1e6 / average_successor_seconds;
   std::cout << "insertion_rate: " << insertion_rate << '\n';
-  std::cout << "find_rate: " << successor_rate << std::endl;
+  std::cout << "successor_rate: " << successor_rate << std::endl;
   return {insertion_rate, successor_rate};
 }
 
@@ -250,11 +250,6 @@ int main(int argc, char** argv) {
       GpuBTree::gpu_blink_tree<key_slice_type, value_type, branching_factor, slab_allocator_type_blink>;
 
   {
-    std::cout << "Benchmarking masstree_slab_type" << std::endl;
-    bench_masstree_range_query<masstree_slab_type, true, false>(
-      d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-      num_keys, max_key_length, max_counts_per_query, num_experiments
-    );
     std::cout << "Benchmarking masstree_slab_reclaim_type" << std::endl;
     bench_masstree_range_query<masstree_slab_reclaim_type, true, false>(
       d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
