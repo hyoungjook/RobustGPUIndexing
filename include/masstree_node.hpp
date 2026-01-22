@@ -64,7 +64,8 @@ struct masstree_node {
       (0u & lock_bit_mask_) |     // is_locked = false;
       (border_bit_mask_) |        // is_border = true;
       (0u & sibling_bit_mask_) |  // has_sibling = false;
-      (0u & garbage_bit_mask_)    // is_garbage = false;
+      (0u & garbage_bit_mask_) |  // is_garbage = false;
+      (root_bit_mask_)            // is_root = true;
     );
     link_or_value_ = 0;
     write_metadata_to_registers();
@@ -134,12 +135,15 @@ struct masstree_node {
   DEVICE_QUALIFIER bool is_border() const {
     return static_cast<bool>(metadata_ & border_bit_mask_);
   }
+  DEVICE_QUALIFIER bool is_root() const { 
+    return static_cast<bool>(metadata_ & root_bit_mask_);
+  }
   DEVICE_QUALIFIER bool is_full() const {
     assert(is_border() ? (num_keys() <= border_max_num_keys_) : (num_keys() <= interior_max_num_keys_));
     return (is_border() ? (num_keys() == border_max_num_keys_) : (num_keys() == interior_max_num_keys_));
   }
   DEVICE_QUALIFIER bool is_underflow() const {
-    return (num_keys() <= underflow_num_keys_);
+    return (num_keys() <= underflow_num_keys_) && (!is_root());
   }
   DEVICE_QUALIFIER bool is_mergeable(const masstree_node& sibling_node) const {
     return (num_keys() + sibling_node.num_keys()) < (is_border() ? border_max_num_keys_ : interior_max_num_keys_);
@@ -410,10 +414,13 @@ struct masstree_node {
                                                   elem_type* left_sibling_ptr,
                                                   elem_type* right_sibling_ptr) {
     // Copy the current node into a child
+    assert(is_root());
     auto left_child =
         masstree_node(left_sibling_ptr, left_sibling_index, tile_, lane_elem_, metadata_, link_or_value_);
     // if the root was a border node, now it should be interior
     metadata_ &= ~border_bit_mask_; // is_border = false;
+    // left child is not a root anymore
+    left_child.metadata_ &= ~root_bit_mask_;  // left_child.is_root = false;
     // Make new root
     set_num_keys(2);
     auto left_width = left_child.get_split_left_width();
@@ -566,7 +573,7 @@ struct masstree_node {
                                       masstree_node& left_child_node,
                                       masstree_node& right_child_node) {
     // this node is parent
-    assert(num_keys() == 2);
+    assert(is_root() && num_keys() == 2);
     // copy the children into current node
     lane_elem_ = left_child_node.lane_elem_;
     link_or_value_ = left_child_node.link_or_value_;
@@ -757,6 +764,9 @@ struct masstree_node {
       if (lead_lane) printf("empty}\n");
       return;
     }
+    if (is_root()) {
+      if (lead_lane) printf("root ");
+    }
     if (lead_lane) printf("%u ", num_keys());
     for (size_type i = 0; i < num_keys(); ++i) {
       elem_type key = tile_.shfl(lane_elem_, get_key_lane_from_location(i));
@@ -800,7 +810,8 @@ struct masstree_node {
 
   // metadata is 32bits.
   //    (MSB)
-  //    [empty:24]
+  //    [empty:23]
+  //    [is_root:1]
   //    [is_garbage:1][has_sibling:1]
   //    [is_border:1][is_locked:1]
   //    [num_keys:4]
@@ -822,6 +833,8 @@ struct masstree_node {
   static constexpr uint32_t sibling_bit_mask_ = 1u << sibling_bit_offset_;
   static constexpr uint32_t garbage_bit_offset_ = 7;
   static constexpr uint32_t garbage_bit_mask_ = 1u << garbage_bit_offset_;
+  static constexpr uint32_t root_bit_offset_ = 8;
+  static constexpr uint32_t root_bit_mask_ = 1u << root_bit_offset_;
 
   static constexpr uint32_t interior_max_num_keys_ = node_width - 1;
   static constexpr uint32_t border_max_num_keys_ = node_width - 2;

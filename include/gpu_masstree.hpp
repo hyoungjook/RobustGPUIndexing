@@ -553,8 +553,9 @@ struct gpu_masstree {
             break; // other warp removed the key
           }
           if (border_node.get_key_value_from_node(key_slice, current_node_index, node_type::BORDER_ENTRY_LINK)) {
+            // TODO rewrite root check here
             // check next layer root node
-            // current_node_index is next_layer_root_node_index
+            // current_node_index is next_layer_root_node_index TODO not anymore
             auto next_layer_root_node = node_type(
               reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile);
             next_layer_root_node.lock();
@@ -700,6 +701,7 @@ struct gpu_masstree {
       // if the node is full, split. it's already locked if it's full.
       if (current_node.is_full()) {
         if (current_node_index != current_root_index) {
+          assert(!current_node.is_root());
           auto parent_node = node_type(
             reinterpret_cast<elem_type*>(allocator.address(parent_index)), parent_index, tile);
           parent_node.lock();
@@ -738,6 +740,7 @@ struct gpu_masstree {
           }
         }
         else { // (current_node_index == root_node_index)
+          assert(current_node.is_root());
           auto left_sibling_index = allocator.allocate(tile);
           auto right_sibling_index = allocator.allocate(tile);
           auto two_siblings = current_node.split_as_root(left_sibling_index,
@@ -813,14 +816,13 @@ struct gpu_masstree {
 
       // lock the node & traverse again, if it's underflow or border
       // if it's underflow, the parent and sibling should be known
-      #define is_current_node_underflow (current_node.is_underflow() && current_node_index != current_root_index)
-      if (is_current_node_underflow || current_node.is_border()) {
+      if (current_node.is_underflow() || current_node.is_border()) {
         if (current_node.try_lock()) {
           current_node.load(cuda_memory_order::memory_order_relaxed);
-          if (!is_current_node_underflow) {
+          if (!current_node.is_underflow()) {
             link_traversed |= traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
           }
-          if (is_current_node_underflow) {
+          if (current_node.is_underflow()) {
             // if parent is unknown, restart from root
             if (current_node_index != current_root_index &&
                 (current_node_index == parent_index || sibling_index == current_root_index ||
@@ -845,14 +847,14 @@ struct gpu_masstree {
           continue;
         }
       }
-      assert((is_current_node_underflow || current_node.is_border()) ? 
+      assert((current_node.is_underflow() || current_node.is_border()) ? 
              (current_node.is_locked() && !current_node.traverse_required(key_slice)) : true);
-      assert(is_current_node_underflow ?
+      assert(current_node.is_underflow() ?
              (current_node_index == current_root_index || (current_node_index != parent_index && sibling_index != current_root_index && !link_traversed)) : true);
 
 
       // proactively merge/borrow underflow nodes
-      if (is_current_node_underflow) {
+      if (current_node.is_underflow()) {
         // lock the sibling first
         auto sibling_node = node_type(
             reinterpret_cast<elem_type*>(allocator.address(sibling_index)), sibling_index, tile);
@@ -887,8 +889,7 @@ struct gpu_masstree {
         parent_node.lock();
         parent_node.load(cuda_memory_order::memory_order_relaxed);
         // make sure parent is not garbage and not underflow
-        if ((parent_node.is_garbage()) ||
-            (parent_node.is_underflow() && parent_index != current_root_index)) {
+        if (parent_node.is_garbage() || parent_node.is_underflow()) {
           current_node.unlock();
           sibling_node.unlock();
           parent_node.unlock();
@@ -985,7 +986,9 @@ struct gpu_masstree {
         // now, current_node is not underflow. if it's not border, unlock.
         if (!current_node.is_border()) { current_node.unlock(); }
       }
-      assert(!is_current_node_underflow);
+      // we allow border node to be underflow (for better remove-empty-root algorithm)
+      //assert(current_node.is_border() || !current_node.is_underflow()); TODO
+      assert(!current_node.is_underflow());
 
       // now, the node is not underflow; if border it's locked, otherwise not locked.
       // traversal or erase
@@ -998,7 +1001,6 @@ struct gpu_masstree {
         current_node_index = current_node.find_next_and_sibling(
             key_slice, sibling_index, sibling_at_left);
       }
-      #undef is_current_node_underflow
     }
     assert(false);
   }
