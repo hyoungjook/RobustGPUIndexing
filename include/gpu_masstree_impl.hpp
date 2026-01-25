@@ -90,18 +90,18 @@ struct gpu_masstree {
             const size_type num_keys,
             cudaStream_t stream = 0,
             bool concurrent = false) {
+    using find_concurrent = kernels::find_device_func<true, key_slice_type, size_type, value_type>;
+    using find_readonly = kernels::find_device_func<false, key_slice_type, size_type, value_type>;
+    #define find_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values
     if (concurrent) {
-      kernels::find_device_func<true, key_slice_type, size_type, value_type> func{
-        .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths,
-        .d_values = values};
+      find_concurrent func{find_args};
       launch_batch_kernel(func, num_keys, stream);
     }
     else {
-      kernels::find_device_func<false, key_slice_type, size_type, value_type> func{
-        .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths,
-        .d_values = values};
+      find_readonly func{find_args};
       launch_batch_kernel(func, num_keys, stream);
     }
+    #undef find_args
   }
 
   void insert(const key_slice_type* keys,
@@ -110,11 +110,20 @@ struct gpu_masstree {
               const value_type* values,
               const size_type num_keys,
               cudaStream_t stream = 0,
-              bool update_if_exists = false) {
-    kernels::insert_device_func<key_slice_type, size_type, value_type> func{
-      .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths,
-      .d_values = values, .update_if_exists = update_if_exists};
-    launch_batch_kernel(func, num_keys, stream);
+              bool update_if_exists = false,
+              bool enable_suffix = true) {
+    using insert_suffix = kernels::insert_device_func<true, key_slice_type, size_type, value_type>;
+    using insert_nosuffix = kernels::insert_device_func<false, key_slice_type, size_type, value_type>;
+    #define insert_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists
+    if (enable_suffix) {
+      insert_suffix func{insert_args};
+      launch_batch_kernel(func, num_keys, stream);
+    }
+    else {
+      insert_nosuffix func{insert_args};
+      launch_batch_kernel(func, num_keys, stream);
+    }
+    #undef insert_args
   }
 
   void erase(const key_slice_type* keys,
@@ -125,30 +134,32 @@ struct gpu_masstree {
              bool do_remove_empty_root = true,
              bool do_merge = true,
              bool concurrent = true) {
+    using erase_readonly = kernels::erase_device_func<false, false, false, key_slice_type, size_type, value_type>;
+    using erase_concurrent = kernels::erase_device_func<true, false, false, key_slice_type, size_type, value_type>;
+    using erase_merge = kernels::erase_device_func<true, true, false, key_slice_type, size_type, value_type>;
+    using erase_rmroot = kernels::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
+    #define erase_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths
     if (do_remove_empty_root) {
-      kernels::erase_device_func<true, true, true, key_slice_type, size_type, value_type> func{
-        .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
+      erase_rmroot func{erase_args};
       launch_batch_kernel(func, num_keys, stream);
     }
     else {
       if (do_merge) {
-        kernels::erase_device_func<true, true, false, key_slice_type, size_type, value_type> func{
-          .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
+        erase_merge func{erase_args};
         launch_batch_kernel(func, num_keys, stream);
       }
       else {
         if (concurrent) {
-          kernels::erase_device_func<true, false, false, key_slice_type, size_type, value_type> func{
-            .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
+          erase_concurrent func{erase_args};
           launch_batch_kernel(func, num_keys, stream);
         }
         else {
-          kernels::erase_device_func<false, false, false, key_slice_type, size_type, value_type> func{
-            .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
+          erase_readonly func{erase_args};
           launch_batch_kernel(func, num_keys, stream);
         }
       }
     }
+    #undef erase_args
   }
 
   void range(const key_slice_type* lower_keys,
@@ -164,42 +175,35 @@ struct gpu_masstree {
              size_type* out_key_lengths = nullptr,
              cudaStream_t stream = 0,
              bool concurrent = false) {
+    using range_bothbound_concurrent = kernels::range_device_func<true, true, key_slice_type, size_type, value_type>;
+    using range_bothbound_readonly = kernels::range_device_func<true, false, key_slice_type, size_type, value_type>;
+    using range_loweronly_concurrent = kernels::range_device_func<false, true, key_slice_type, size_type, value_type>;
+    using range_loweronly_readonly = kernels::range_device_func<false, false, key_slice_type, size_type, value_type>;
+    #define range_args .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,  \
+                       .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,  \
+                       .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths, \
+                       .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths
     if (upper_keys) {
       if (concurrent) {
-        kernels::range_device_func<true, true, key_slice_type, size_type, value_type> func{
-          .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
-          .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
-          .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
-          .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths};
+        range_bothbound_concurrent func{range_args};
         launch_batch_kernel(func, num_queries, stream);
       }
       else {
-        kernels::range_device_func<true, false, key_slice_type, size_type, value_type> func{
-          .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
-          .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
-          .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
-          .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths};
+        range_bothbound_readonly func{range_args};
         launch_batch_kernel(func, num_queries, stream);
       }
     }
     else {
       if (concurrent) {
-        kernels::range_device_func<false, true, key_slice_type, size_type, value_type> func{
-          .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
-          .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
-          .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
-          .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths};
+        range_loweronly_concurrent func{range_args};
         launch_batch_kernel(func, num_queries, stream);
       }
       else {
-        kernels::range_device_func<false, false, key_slice_type, size_type, value_type> func{
-          .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
-          .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
-          .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
-          .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths};
+        range_loweronly_readonly func{range_args};
         launch_batch_kernel(func, num_queries, stream);
       }
     }
+    #undef range_args
   }
 
   void test_concurrent_insert_erase(const key_slice_type* insert_keys,
@@ -212,28 +216,56 @@ struct gpu_masstree {
                                     const size_type max_key_length,
                                     cudaStream_t stream = 0,
                                     bool insert_update_if_exists = false,
+                                    bool insert_enable_suffix = true,
                                     bool erase_do_remove_empty_root = true,
                                     bool erase_do_merge = true) {
-    kernels::insert_device_func<key_slice_type, size_type, value_type> insert_func{
-      .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths,
-      .d_values = insert_values, .update_if_exists = insert_update_if_exists};
+    using insert_suffix = kernels::insert_device_func<true, key_slice_type, size_type, value_type>;
+    using insert_nosuffix = kernels::insert_device_func<false, key_slice_type, size_type, value_type>;
+    using erase_concurrent = kernels::erase_device_func<true, false, false, key_slice_type, size_type, value_type>;
+    using erase_merge = kernels::erase_device_func<true, true, false, key_slice_type, size_type, value_type>;
+    using erase_rmroot = kernels::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
+    #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
+    #define erase_args .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths
     if (erase_do_remove_empty_root) {
-      kernels::erase_device_func<true, true, true, key_slice_type, size_type, value_type> erase_func{
-        .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths};
-      launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
-    }
-    else {
-      if (erase_do_merge) {
-        kernels::erase_device_func<true, true, false, key_slice_type, size_type, value_type> erase_func{
-          .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths};
+      if (insert_enable_suffix) {
+        insert_suffix insert_func{insert_args};
+        erase_rmroot erase_func{erase_args};
         launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
       }
       else {
-        kernels::erase_device_func<true, false, false, key_slice_type, size_type, value_type> erase_func{
-          .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths};
+        insert_nosuffix insert_func{insert_args};
+        erase_rmroot erase_func{erase_args};
         launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
       }
     }
+    else {
+      if (erase_do_merge) {
+        if (insert_enable_suffix) {
+          insert_suffix insert_func{insert_args};
+          erase_merge erase_func{erase_args};
+          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+        }
+        else {
+          insert_nosuffix insert_func{insert_args};
+          erase_merge erase_func{erase_args};
+          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+        }
+      }
+      else {
+        if (insert_enable_suffix) {
+          insert_suffix insert_func{insert_args};
+          erase_concurrent erase_func{erase_args};
+          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+        }
+        else {
+          insert_nosuffix insert_func{insert_args};
+          erase_concurrent erase_func{erase_args};
+          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+        }
+      }
+    }
+    #undef insert_args
+    #undef erase_args
   }
 
   // device-side APIs
@@ -424,7 +456,7 @@ struct gpu_masstree {
     assert(false);
   }
 
-  template <typename tile_type>
+  template <bool enable_suffix, typename tile_type>
   DEVICE_QUALIFIER bool cooperative_insert(const key_slice_type* key,
                                            const size_type key_length,
                                            const value_type& value,
@@ -568,14 +600,30 @@ struct gpu_masstree {
       else {
         // key not exists
         if (more_key) {
-          // insert suffix entry
-          current_node_index = allocator.allocate(tile);
-          auto suffix = suffix_type(
-              reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-          suffix.template create_from<cuda_memory_order::relaxed>(key + slice, key_length - slice, value);
-          suffix.template store_head<cuda_memory_order::relaxed>();
-          __threadfence();
-          keystate = node_type::KEYSTATE_SUFFIX;
+          if constexpr (enable_suffix) {
+            // insert suffix entry
+            current_node_index = allocator.allocate(tile);
+            auto suffix = suffix_type(
+                reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
+            suffix.template create_from<cuda_memory_order::relaxed>(key + slice, key_length - slice, value);
+            suffix.template store_head<cuda_memory_order::relaxed>();
+            __threadfence();
+            keystate = node_type::KEYSTATE_SUFFIX;
+          }
+          else {
+            // insert link entry and continue to next layer
+            current_node_index = allocator.allocate(tile);
+            auto next_root_node = masstree_node<tile_type>(
+              reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile);
+            next_root_node.initialize_root();
+            next_root_node.template store<cuda_memory_order::relaxed>();
+            __threadfence();
+            border_node.insert(key_slice, current_node_index, node_type::KEYSTATE_LINK);
+            border_node.template store<cuda_memory_order::relaxed>();
+            border_node.unlock();
+            slice++;
+            continue;
+          }
         }
         else {
           // insert value to the node
@@ -622,33 +670,35 @@ struct gpu_masstree {
     while (slice < key_length) {
       key_slice_type key_slice = key[slice];
       const bool more_key = (slice < key_length - 1);
-      size_type border_node_index;
+      [[maybe_unused]] size_type border_node_index;
       node_type border_node(tile);
       // traverse the layer
       if constexpr (!do_merge) {
         const bool lock_border_node = !more_key;
-        border_node = coop_traverse_until_border<concurrent>(key_slice, current_node_index, tile, allocator, lock_border_node, &border_node_index);
+        border_node = coop_traverse_until_border<concurrent>(key_slice, current_node_index, tile, allocator, lock_border_node, 
+                                                             do_remove_empty_root ? &border_node_index : nullptr);
       }
       else {
         merge_early_exit_check early_exit_check;
         border_node = coop_traverse_until_border_merge(key_slice, more_key, current_node_index,
                                                        tile, allocator, reclaimer, early_exit_check,
-                                                       &border_node_index);
+                                                       do_remove_empty_root ? &border_node_index : nullptr);
         if (early_exit_check.early_exited_) {
           return false; // key not exists
         }
       }
+      const bool border_node_locked_by_me = (do_merge) || (!more_key);
       if (more_key) {
         // try traverse
         size_type next_index;
         const int found_keystate = border_node.get_key_value_from_node(key_slice, next_index, true);
         if (found_keystate < 0) { // key not exists
-          if (border_node.is_locked()) { border_node.unlock(); }
+          if (border_node_locked_by_me) { border_node.unlock(); }
           return false;
         }
         else if (found_keystate == node_type::KEYSTATE_LINK) {
           // traverse to next layer
-          if (border_node.is_locked()) { border_node.unlock(); }
+          if (border_node_locked_by_me) { border_node.unlock(); }
           if constexpr (do_remove_empty_root) { per_layer_indexes.push(current_node_index, border_node_index); }
           current_node_index = next_index;
           slice++;
@@ -661,21 +711,23 @@ struct gpu_masstree {
           const bool suffix_eq = suffix.template streq<memory_order>(key + slice, key_length - slice);
           if (suffix_eq) {
             // key exists, erase suffix value and mark suffix nodes garbage
-            if (!border_node.is_locked()) {
+            if (!border_node_locked_by_me) {
               border_node.lock();
               border_node.template load<cuda_memory_order::relaxed>();
               if constexpr (concurrent) {
-                traverse_side_links_with_locks(border_node, border_node_index, key_slice, tile, allocator);
+                size_type node_index;
+                traverse_side_links_with_locks(border_node, node_index, key_slice, tile, allocator);
               }
             }
+            assert(current_node.is_border() && !current_node.is_garbage()); // TODO handle this case?
             const bool success = border_node.erase(key_slice, node_type::KEYSTATE_SUFFIX);
-            assert(success);
+            assert(success);  // TODO might fail after lock?
             border_node.template store<cuda_memory_order::relaxed>();
             border_node.unlock();
             suffix.template retire<memory_order>(reclaimer, next_index);
           }
           else {
-            if (border_node.is_locked()) { border_node.unlock(); }
+            if (border_node_locked_by_me) { border_node.unlock(); }
             return false;
           }
         }
@@ -773,6 +825,7 @@ struct gpu_masstree {
           if constexpr (concurrent) {
             traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
           }
+          assert(current_node.is_border() && !current_node.is_garbage()); // TODO handle this case?
         }
         if (node_index != nullptr) { *node_index = current_node_index; }
         return current_node;

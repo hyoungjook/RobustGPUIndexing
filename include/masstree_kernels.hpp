@@ -138,7 +138,7 @@ __global__ void batch_concurrent_two_funcs_kernel(masstree tree,
   if constexpr (do_reclaim) { reclaimer.drain_all(block_wide_tile, tile, allocator); }
 }
 
-template <typename key_slice_type, typename size_type, typename value_type>
+template <bool enable_suffix, typename key_slice_type, typename size_type, typename value_type>
 struct insert_device_func {
   static constexpr bool reclaim_required = true;
   // kernel args
@@ -167,7 +167,7 @@ struct insert_device_func {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
-    tree.template cooperative_insert<>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+    tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
