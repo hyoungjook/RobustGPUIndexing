@@ -494,6 +494,7 @@ struct gpu_masstree {
               return true;
             }
             else {  // fail_if_exists
+              border_node.unlock();
               return false;
             }
           }

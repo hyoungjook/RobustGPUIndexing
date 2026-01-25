@@ -195,9 +195,7 @@ struct masstree_suffix_node {
     while (true) {
       // phase 1. copy src[offset:node_max_len) -> dst[0:node_max_len-offset) in same node
       uint32_t copy_count = min(new_length, node_max_len_ - offset);
-      if (tile_.thread_rank() < copy_count) {
-        dst_lane_elem = tile_.shfl_down(src_lane_elem, offset);
-      }
+      dst_lane_elem = tile_.shfl_down(src_lane_elem, offset);
       new_length -= copy_count;
       if (new_length == 0) { break; }
       // phase 2. copy src.next[0:offset) -> dst[node_max_len-offset:node_max_len)
@@ -205,8 +203,9 @@ struct masstree_suffix_node {
       auto* src_next_ptr = reinterpret_cast<elem_type*>(allocator_.address(src_next_index));
       src_lane_elem = cuda_memory<elem_type>::load(src_next_ptr + tile_.thread_rank(), order);
       copy_count = min(new_length, offset);
-      if (node_max_len_ - offset <= tile_.thread_rank() && tile_.thread_rank() < node_max_len_) {
-        dst_lane_elem = tile_.shfl_up(src_lane_elem, node_max_len_ - offset);
+      auto up_src_elem = tile_.shfl_up(src_lane_elem, node_max_len_ - offset);
+      if (node_max_len_ - offset <= tile_.thread_rank()) {
+        dst_lane_elem = up_src_elem;
       }
       new_length -= copy_count;
       if (new_length == 0) {
@@ -224,6 +223,15 @@ struct masstree_suffix_node {
         }
       }
       dst_ptr = src_next_ptr;
+    }
+    // flush dst_lane_elem
+    if (tile_.thread_rank() < node_max_len_) {
+      if (dst_ptr) {
+        cuda_memory<elem_type>::store(dst_ptr + tile_.thread_rank(), dst_lane_elem, order);
+      }
+      else {
+        lane_elem_ = dst_lane_elem;
+      }
     }
     return new_suffix_index;
   }
