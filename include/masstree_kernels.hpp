@@ -167,7 +167,7 @@ struct insert_device_func {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
-    tree.cooperative_insert(cur_key, cur_key_length, cur_value, tile, allocator, update_if_exists);
+    tree.cooperative_insert(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };

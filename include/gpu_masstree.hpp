@@ -28,6 +28,7 @@
 #include <ios>
 #include <iostream>
 #include <masstree_node.hpp>
+#include <masstree_suffix.hpp>
 #include <pair_type.hpp>
 #include <queue>
 #include <sstream>
@@ -212,20 +213,39 @@ struct gpu_masstree {
   // device-side APIs
   template <typename tile_type>
   DEVICE_QUALIFIER value_type cooperative_find(const key_slice_type* key,
-                                               const size_type key_length,
+                                               size_type key_length,
                                                const tile_type& tile,
                                                device_allocator_context_type& allocator,
                                                bool concurrent = false) {
     using node_type = masstree_node<tile_type>;
+    using suffix_type = masstree_suffix_node<tile_type, device_allocator_context_type>;
     size_type current_node_index = *d_root_index_;
-    for (size_type slice = 0; slice < key_length; slice++) {
+    size_type slice = 0;
+    while (slice < key_length) {
       const key_slice_type key_slice = key[slice];
-      const bool link_or_value = (slice < key_length - 1);
+      const bool more_key = (slice < key_length - 1);
       auto border_node = coop_traverse_until_border(key_slice, current_node_index, tile, allocator, false, concurrent);
-      const bool found = border_node.get_key_value_from_node(key_slice, current_node_index, link_or_value);
-      if (!found) {
+      const int found_keystate = border_node.get_key_value_from_node(key_slice, current_node_index, more_key);
+      if (found_keystate < 0) {
         // key not exists, exit early
         return invalid_value;
+      }
+      if (found_keystate == node_type::KEYSTATE_SUFFIX) {
+        auto suffix = suffix_type(
+            reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
+        bool suffix_eq;
+        if (concurrent) {
+          suffix.load(cuda_memory_order::memory_order_relaxed);
+          suffix_eq = suffix.streq(key + slice, key_length - slice, cuda_memory_order::memory_order_relaxed);
+        }
+        else {
+          suffix.load();
+          suffix_eq = suffix.streq(key + slice, key_length - slice);
+        }
+        return suffix_eq ? suffix.get_value() : invalid_value;
+      }
+      else {  // keystate == LINK or VALUE
+        slice++;
       }
     }
     // current_node_index has the final value
@@ -256,13 +276,13 @@ struct gpu_masstree {
     size_type current_node_index = *d_root_index_;
     size_type layer = 0, out_count = 0;
     key_slice_type lower_key_slice = lower_key[0];
-    bool lower_key_lv = (lower_key_length > 1);
+    bool lower_key_more = (lower_key_length > 1);
     [[maybe_unused]] key_slice_type upper_key_slice;
-    [[maybe_unused]] bool upper_key_lv;
+    [[maybe_unused]] bool upper_key_more;
     [[maybe_unused]] bool ignore_upper_key;
     if constexpr (use_upper_key) {
       upper_key_slice = upper_key[0];
-      upper_key_lv = (upper_key_length > 1);
+      upper_key_more = (upper_key_length > 1);
       ignore_upper_key = false;
     }
     bool passed_lower_key = false;
@@ -283,13 +303,15 @@ struct gpu_masstree {
           // scan a node and store outputs
           uint32_t count;
           if constexpr (use_upper_key) {
-            count = border_node.scan(lower_key_slice, lower_key_lv,
-                                     ignore_upper_key, upper_key_slice, upper_key_lv,
-                                     out_max_count, scan_op, out_value, out_keys, layer, out_key_max_length);
+            count = border_node.scan(lower_key_slice, lower_key_more,
+                                     ignore_upper_key, upper_key_slice, upper_key_more,
+                                     out_max_count, scan_op, out_value, out_keys, concurrent,
+                                     layer, out_key_max_length);
           }
           else {
-            count = border_node.scan(lower_key_slice, lower_key_lv,
-                                     out_max_count, scan_op, out_value, out_keys, layer, out_key_max_length);
+            count = border_node.scan(lower_key_slice, lower_key_more,
+                                     out_max_count, scan_op, out_value, out_keys, concurrent,
+                                     layer, out_key_max_length);
           }
           assert(count <= out_max_count);
           out_count += count;
@@ -336,7 +358,7 @@ struct gpu_masstree {
             (lower_key_slice < checkpoint_key_slice || layer == lower_key_length);
         // lower key for next layer
         lower_key_slice = passed_lower_key ? min_key_slice : lower_key[layer];
-        lower_key_lv = !(passed_lower_key || layer == lower_key_length - 1);
+        lower_key_more = !(passed_lower_key || layer == lower_key_length - 1);
         // handle upper key
         if constexpr (use_upper_key) {
           ignore_upper_key_stack.push(static_cast<size_type>(ignore_upper_key));
@@ -345,7 +367,7 @@ struct gpu_masstree {
               (checkpoint_key_slice < upper_key_slice || layer == upper_key_length);
           // upper key for next layer
           upper_key_slice = ignore_upper_key ? 0 : upper_key[layer];
-          upper_key_lv = (layer != upper_key_length - 1);
+          upper_key_more = (layer != upper_key_length - 1);
         }
       }
       else if (scan_op == -2) { // go to prev layer
@@ -367,11 +389,11 @@ struct gpu_masstree {
         }
         // scan from checkpoint_key, exclusive
         lower_key_slice++;
-        lower_key_lv = node_type::BORDER_ENTRY_VALUE;
+        lower_key_more = false;
         if constexpr (use_upper_key) {
           upper_key_slice = ignore_upper_key ? 0 : upper_key[layer];
-          upper_key_lv = (layer != upper_key_length - 1);
-          assert(ignore_upper_key || border_node.cmp_key_lv(lower_key_slice, lower_key_lv, upper_key_slice, upper_key_lv));
+          upper_key_more = (layer != upper_key_length - 1);
+          assert(ignore_upper_key || border_node.cmp_key(lower_key_slice, lower_key_more, upper_key_slice, upper_key_more));
         }
       }
       else {
@@ -390,30 +412,32 @@ struct gpu_masstree {
                                            const value_type& value,
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,
+                                           device_reclaimer_context_type& reclaimer,
                                            bool update_if_exists = false) {
     using node_type = masstree_node<tile_type>;
+    using suffix_type = masstree_suffix_node<tile_type, device_allocator_context_type>;
     size_type current_node_index = *d_root_index_;
     size_type prev_root_index = invalid_value;
     size_type slice = 0;
     while (slice < key_length) {
       const key_slice_type key_slice = key[slice];
-      const bool link_or_value = (slice < key_length - 1);
+      const bool more_key = (slice < key_length - 1);
       struct split_early_exit_check {
         DEVICE_QUALIFIER bool operator()(const node_type& border_node,
                                          const key_slice_type& key_slice,
-                                         bool link_or_value) const {
+                                         bool more_key) const {
           // if the border node already has the key slice and it's not the last slice,
           // we just follow the same entry, no need to update the node; so we don't lock it
-          return (link_or_value == node_type::BORDER_ENTRY_LINK) && border_node.key_is_in_node(key_slice, link_or_value);
+          return more_key && border_node.key_is_in_node(key_slice, node_type::KEYSTATE_LINK);
         }
         DEVICE_QUALIFIER void early_exit() { early_exited_ = true; }
         bool early_exited_ = false;
       } early_exit_check;
-      auto border_node = coop_traverse_until_border_split(key_slice, link_or_value, current_node_index, tile, allocator, early_exit_check);
+      auto border_node = coop_traverse_until_border_split(key_slice, more_key, current_node_index, tile, allocator, early_exit_check);
       if (early_exit_check.early_exited_) {
         // find next layer root and continue now
         prev_root_index = current_node_index;
-        border_node.get_key_value_from_node(key_slice, current_node_index, link_or_value);
+        border_node.get_key_value_from_node(key_slice, current_node_index, more_key);
         slice++;
         continue;
       }
@@ -436,49 +460,118 @@ struct gpu_masstree {
         continue;
       }
       prev_root_index = current_node_index;
-      if (border_node.get_key_value_from_node(key_slice, current_node_index, link_or_value)) {
+      auto keystate = border_node.get_key_value_from_node(key_slice, current_node_index, more_key);
+      if (keystate >= 0) {
         // key exists, the value is stored in current_node_index
-        if (link_or_value == node_type::BORDER_ENTRY_VALUE) {
-          if (update_if_exists) {
-            border_node.update(key_slice, value);
-          }
-          else {
-            // fail_if_exists
-            border_node.unlock();
-            return false;
-          }
-        }
-        else {
+        if (keystate == node_type::KEYSTATE_LINK) {
           // continue to next layer
           border_node.unlock();
           slice++;
           continue;
         }
+        if (keystate == node_type::KEYSTATE_VALUE) {
+          // update or fail
+          if (update_if_exists) {
+            border_node.update(key_slice, value, node_type::KEYSTATE_VALUE, node_type::KEYSTATE_VALUE);
+          }
+          else { // fail_if_exists
+            border_node.unlock();
+            return false;
+          }
+        }
+        else { // node_type::KEYSTATE_SUFFIX
+          auto suffix = suffix_type(
+              reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
+          suffix.load(cuda_memory_order::memory_order_relaxed);
+          key_slice_type mismatch_suffix_slice;
+          int cmp = suffix.strcmp(key + slice, key_length - slice, cuda_memory_order::memory_order_relaxed, &mismatch_suffix_slice);
+          if (cmp == 0) { // already exists
+            if (update_if_exists) {
+              // protected by border_node.lock()
+              suffix.update_value(value);
+              suffix.store_head(cuda_memory_order::memory_order_relaxed);
+              border_node.unlock();
+              return true;
+            }
+            else {  // fail_if_exists
+              return false;
+            }
+          }
+          else {  // mismatch: create new node chain
+            int num_matches = abs(cmp) - 1;
+            auto suffix_index = current_node_index;
+            current_node_index = allocator.allocate(tile);
+            border_node.update(key_slice, current_node_index, node_type::KEYSTATE_SUFFIX, node_type::KEYSTATE_LINK);
+            // chain of singleton nodes for matching prefix
+            for (int i = 0; i < num_matches; i++) {
+              slice++;
+              auto singleton_node = node_type(
+                  reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile);
+              singleton_node.initialize_root();
+              current_node_index = allocator.allocate(tile);
+              singleton_node.insert(key[slice], current_node_index, node_type::KEYSTATE_LINK);
+              singleton_node.store(cuda_memory_order::memory_order_relaxed);
+            }
+            slice++;
+            // one diverging node with two entries
+            auto doubleton_node = node_type(
+                reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile);
+            doubleton_node.initialize_root();
+            // insert suffix of suffix key
+            assert(num_matches < suffix.get_key_length());
+            if (num_matches == suffix.get_key_length() - 1) {
+              doubleton_node.insert(mismatch_suffix_slice, suffix.get_value(), node_type::KEYSTATE_VALUE);
+              suffix.retire(reclaimer, suffix_index, cuda_memory_order::memory_order_relaxed);
+            }
+            else {
+              suffix.trim(num_matches + 1, suffix_index, reclaimer, cuda_memory_order::memory_order_relaxed);
+              suffix.store_head(cuda_memory_order::memory_order_relaxed);
+              doubleton_node.insert(mismatch_suffix_slice, suffix_index, node_type::KEYSTATE_SUFFIX);
+            }
+            // insert suffix of this key
+            assert(slice < key_length);
+            if (slice == key_length - 1) {
+              doubleton_node.insert(key[slice], value, node_type::KEYSTATE_VALUE);
+            }
+            else {
+              current_node_index = allocator.allocate(tile);
+              suffix = suffix_type(
+                  reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
+              suffix.create_from(key + slice, key_length - slice, value, cuda_memory_order::memory_order_relaxed);
+              suffix.store_head(cuda_memory_order::memory_order_relaxed);
+              doubleton_node.insert(key[slice], current_node_index, node_type::KEYSTATE_SUFFIX);
+            }
+            doubleton_node.store(cuda_memory_order::memory_order_relaxed);
+            __threadfence();
+          }
+        }
       }
       else {
         // key not exists
-        if (link_or_value == node_type::BORDER_ENTRY_VALUE) {
-          // insert value to the node
-          current_node_index = value;
+        if (more_key) {
+          // insert suffix entry
+          current_node_index = allocator.allocate(tile);
+          auto suffix = suffix_type(
+              reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
+          suffix.create_from(key + slice, key_length - slice, value, cuda_memory_order::memory_order_relaxed);
+          suffix.store_head(cuda_memory_order::memory_order_relaxed);
+          __threadfence();
+          keystate = node_type::KEYSTATE_SUFFIX;
         }
         else {
-          // allocate next layer root node and insert its index
-          current_node_index = allocator.allocate(tile);
-          auto next_root_node = masstree_node<tile_type>(
-            reinterpret_cast<elem_type*>(allocator.address(current_node_index)),
-            current_node_index,
-            tile);
-          next_root_node.initialize_root();
-          next_root_node.store(cuda_memory_order::memory_order_relaxed);
-          __threadfence();
+          // insert value to the node
+          current_node_index = value;
+          keystate = node_type::KEYSTATE_VALUE;
         }
-        border_node.insert(key_slice, current_node_index, link_or_value);
+        border_node.insert(key_slice, current_node_index, keystate);
       }
+      // reaching here means we updated border node and it's done
       border_node.store(cuda_memory_order::memory_order_relaxed);
       border_node.unlock();
-      slice++;
+      return true;
     }
-    return true;
+    assert(false);
+    return false;
   }
 
   template <bool do_merge, bool do_remove_empty_root, typename tile_type>
@@ -488,78 +581,118 @@ struct gpu_masstree {
                                           device_allocator_context_type& allocator,
                                           device_reclaimer_context_type& reclaimer,
                                           bool concurrent = false) {
+    static_assert(do_merge || !do_remove_empty_root);
     using node_type = masstree_node<tile_type>;
+    using suffix_type = masstree_suffix_node<tile_type, device_allocator_context_type>;
     using dynamic_stack_type = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
+    struct merge_early_exit_check {
+      DEVICE_QUALIFIER bool operator()(const node_type& border_node,
+                                       const key_slice_type& key_slice,
+                                       bool more_key) const {
+        // if the border node doesn't have the key slice, no need to lock the node
+        return !border_node.key_is_in_node(key_slice, more_key);
+      }
+      DEVICE_QUALIFIER void early_exit() { early_exited_ = true; }
+      DEVICE_QUALIFIER void reset() { early_exited_ = false; }
+      bool early_exited_ = false;
+    };
     [[maybe_unused]] dynamic_stack_type per_layer_indexes(allocator, tile); // (root_index, border_index)
-    // read-only traverse before the last slice
     size_type current_node_index = *d_root_index_;
-    for (size_type slice = 0; slice < key_length - 1; slice++) {
-      const key_slice_type key_slice = key[slice];
+    uint32_t slice = 0;
+    bool retry_with_merge = false;
+    while (slice < key_length) {
+      key_slice_type key_slice = key[slice];
+      const bool more_key = (slice < key_length - 1);
       [[maybe_unused]] size_type border_node_index;
-      auto border_node = coop_traverse_until_border(key_slice, current_node_index, tile, allocator, false,
-                                                    do_merge || do_remove_empty_root || concurrent,
-                                                    do_remove_empty_root ? &border_node_index: nullptr);
-      if constexpr (do_remove_empty_root) { per_layer_indexes.push(current_node_index, border_node_index); }
-      const bool found = border_node.get_key_value_from_node(key_slice, current_node_index, node_type::BORDER_ENTRY_LINK);
-      if (!found) {
-        // key not exists, exit early
-        return false;
+      node_type border_node(tile);
+      // traverse the layer
+      if (!retry_with_merge && (!do_merge || more_key)) {
+        // start with read-only traverse
+        border_node = coop_traverse_until_border(key_slice, current_node_index, tile, allocator, !more_key,
+                                                 do_merge || concurrent,
+                                                 do_remove_empty_root ? &border_node_index: nullptr);
       }
-    }
-    // now erase the entry at the last_slice layer
-    if constexpr (!do_merge) {
-      // no-merge algorithm: just erase the element
-      const key_slice_type key_slice = key[key_length - 1];
-      auto border_node = coop_traverse_until_border(key_slice, current_node_index, tile, allocator, true, concurrent);
-      const bool success = border_node.erase(key_slice, node_type::BORDER_ENTRY_VALUE);
-      if (success) {
-        border_node.store(cuda_memory_order::memory_order_relaxed);
-      }
-      border_node.unlock();
-      return success;
-    }
-    else { // (do_merge)
-      // merge algorithm
-      key_slice_type key_slice = key[key_length - 1];
-      struct merge_early_exit_check {
-        DEVICE_QUALIFIER bool operator()(const node_type& border_node,
-                                         const key_slice_type& key_slice,
-                                         bool link_or_value) const {
-          // if the border node doesn't have the key slice, no need to lock the node
-          return !border_node.key_is_in_node(key_slice, link_or_value);
+      else {  // retry_with_merge || (do_merge && !more_key (i.e. last slice))
+        // traverse with proactive merge
+        merge_early_exit_check early_exit_check;
+        border_node = coop_traverse_until_border_merge(key_slice, more_key, current_node_index,
+                                                       tile, allocator, reclaimer, early_exit_check,
+                                                       do_remove_empty_root ? &border_node_index: nullptr);
+        if (early_exit_check.early_exited_) {
+          return false; // key not exists
         }
-        DEVICE_QUALIFIER void early_exit() { early_exited_ = true; }
-        DEVICE_QUALIFIER void reset() { early_exited_ = false; }
-        bool early_exited_ = false;
-      } early_exit_check;
-      auto border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_VALUE, current_node_index, tile, allocator, reclaimer, early_exit_check);
-      if (early_exit_check.early_exited_) {
-        return false; // key not exists
+        retry_with_merge = false;
       }
-      assert(border_node.is_locked());
-      const bool success = border_node.erase(key_slice, node_type::BORDER_ENTRY_VALUE);
-      if (success) {
-        border_node.store(cuda_memory_order::memory_order_relaxed);
+      assert(more_key || border_node.is_locked());
+      if (more_key) {
+        // try traverse
+        size_type next_index;
+        const int found_keystate = border_node.get_key_value_from_node(key_slice, next_index, true);
+        if (found_keystate < 0) { // key not exists
+          return false;
+        }
+        else if (found_keystate == node_type::KEYSTATE_LINK) {
+          // traverse to next layer
+          if constexpr (do_remove_empty_root) { per_layer_indexes.push(current_node_index, border_node_index); }
+          current_node_index = next_index;
+          slice++;
+          continue;
+        }
+        else {  // KEYSTATE_SUFFIX
+          auto suffix = suffix_type(
+              reinterpret_cast<elem_type*>(allocator.address(next_index)), next_index, tile, allocator);
+          bool suffix_eq;
+          if (concurrent) {
+            suffix.load(cuda_memory_order::memory_order_relaxed);
+            suffix_eq = suffix.streq(key + slice, key_length - slice, cuda_memory_order::memory_order_relaxed);
+          }
+          else {
+            suffix.load();
+            suffix_eq = suffix.streq(key + slice, key_length - slice);
+          }
+          if (suffix_eq) {
+            // key exists, erase suffix value and mark suffix nodes garbage
+            if (border_node.is_underflow()) {
+              // cannot allow underflow, retry from root with proactive merging
+              border_node.unlock();
+              retry_with_merge = true;
+              continue;
+            }
+            const bool success = border_node.erase(key_slice, node_type::KEYSTATE_SUFFIX);
+            assert(success);
+            border_node.store(cuda_memory_order::memory_order_relaxed);
+            border_node.unlock();
+            suffix.retire(reclaimer, next_index);
+          }
+          else { return false; }
+        }
       }
-      border_node.unlock();
+      else {  // !more_key
+        // erase VALUE entry if exists
+        const bool success = border_node.erase(key_slice, node_type::KEYSTATE_VALUE);
+        if (success) {
+          border_node.store(cuda_memory_order::memory_order_relaxed);
+        }
+        border_node.unlock();
+        if (!success) { return false; }
+      }
+      // reaching here means we succeeded to erase the entry
       if constexpr (do_remove_empty_root) {
         // collect empty roots
-        int layer = static_cast<int>(key_length) - 2;
-        while (layer >= 0 && border_node.is_root() && border_node.num_keys() == 0) {
-          key_slice = key[layer];
+        slice--;
+        while (static_cast<int>(slice) >= 0 && border_node.is_root() && border_node.num_keys() == 0) {
+          key_slice = key[slice];
           size_type layer_root_index;
           per_layer_indexes.pop(layer_root_index, current_node_index);
           border_node = coop_traverse_until_border(key_slice, current_node_index, tile, allocator, true, true);
-          if (border_node.key_is_in_node(key_slice, node_type::BORDER_ENTRY_LINK) && border_node.is_underflow()) {
+          if (border_node.key_is_in_node(key_slice, node_type::KEYSTATE_LINK) && border_node.is_underflow()) {
             // cannot allow underflow. retry from root with proactive merging
             border_node.unlock();
-            early_exit_check.reset();
-            border_node = coop_traverse_until_border_merge(key_slice, node_type::BORDER_ENTRY_LINK, layer_root_index, tile, allocator, reclaimer, early_exit_check);
-            if (early_exit_check.early_exited_) {
-              break;
-            }
+            merge_early_exit_check early_exit_check;
+            border_node = coop_traverse_until_border_merge(key_slice, true, layer_root_index, tile, allocator, reclaimer, early_exit_check);
+            if (early_exit_check.early_exited_) { break; }
           }
-          if (border_node.get_key_value_from_node(key_slice, current_node_index, node_type::BORDER_ENTRY_LINK)) {
+          if (border_node.get_key_value_from_node(key_slice, current_node_index, node_type::KEYSTATE_LINK)) {
             // check next layer root node
             // current_node_index is next_layer_root_node_index
             auto next_layer_root_node = node_type(
@@ -569,7 +702,7 @@ struct gpu_masstree {
             if (!next_layer_root_node.is_garbage() && next_layer_root_node.num_keys() == 0) {
               // still empty, remove them
               next_layer_root_node.make_garbage_node(false);
-              border_node.erase(key_slice, node_type::BORDER_ENTRY_LINK);
+              border_node.erase(key_slice, node_type::KEYSTATE_LINK);
               next_layer_root_node.store(cuda_memory_order::memory_order_relaxed);
               __threadfence();
               border_node.store(cuda_memory_order::memory_order_relaxed);
@@ -589,11 +722,11 @@ struct gpu_masstree {
             border_node.unlock();
             break;
           }
-          layer--;
+          slice--;
         }
         per_layer_indexes.destroy();
       }
-      return success;
+      return true;
     }
     assert(false);
     return false;
@@ -644,7 +777,7 @@ struct gpu_masstree {
 
   template <typename tile_type, typename EarlyExitCheck>
   DEVICE_QUALIFIER masstree_node<tile_type> coop_traverse_until_border_split(const key_slice_type& key_slice,
-                                                                             bool link_or_value,
+                                                                             bool more_key,
                                                                              const size_type& current_root_index,
                                                                              const tile_type& tile,
                                                                              device_allocator_context_type& allocator,
@@ -664,7 +797,7 @@ struct gpu_masstree {
       bool link_traversed = traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
 
       // early exit condition
-      if (current_node.is_border() && early_exit_check(current_node, key_slice, link_or_value)) {
+      if (current_node.is_border() && early_exit_check(current_node, key_slice, more_key)) {
         early_exit_check.early_exit();
         return current_node;
       }
@@ -791,12 +924,13 @@ struct gpu_masstree {
 
   template <typename tile_type, typename EarlyExitCheck>
   DEVICE_QUALIFIER masstree_node<tile_type> coop_traverse_until_border_merge(const key_slice_type& key_slice,
-                                                                             bool link_or_value,
+                                                                             bool more_key,
                                                                              const size_type& current_root_index,
                                                                              const tile_type& tile,
                                                                              device_allocator_context_type& allocator,
                                                                              device_reclaimer_context_type& reclaimer,
-                                                                             EarlyExitCheck& early_exit_check) {
+                                                                             EarlyExitCheck& early_exit_check,
+                                                                             size_type* node_index = nullptr) {
     // starting from a local root node in a layer, return the LOCKED border node and its index
     // proactively merge/borrow underflow nodes while traversal. also the returned border node is not underflow.
     // if early exit condition is met, returned node is not locked by this warp (might locked by another)
@@ -814,7 +948,7 @@ struct gpu_masstree {
       bool link_traversed = traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
 
       // early exit condition
-      if (current_node.is_border() && early_exit_check(current_node, key_slice, link_or_value)) {
+      if (current_node.is_border() && early_exit_check(current_node, key_slice, more_key)) {
         early_exit_check.early_exit();
         return current_node;
       }
@@ -994,8 +1128,8 @@ struct gpu_masstree {
       assert(!current_node.is_underflow());
 
       // now, the node is not underflow; if border it's locked, otherwise not locked.
-      // traversal or erase
       if (current_node.is_border()) {
+        if (node_index) { *node_index = current_node_index; }
         return current_node;
       }
       else { // traverse
@@ -1009,50 +1143,6 @@ struct gpu_masstree {
 
  public:
   // device-side debug functions
-  template <typename tile_type>
-  DEVICE_QUALIFIER void cooperative_debug_find_varlen_print(
-      const key_slice_type* key, const size_type key_length, tile_type& tile) {
-    using node_type = masstree_node<tile_type>;
-    device_allocator_context_type allocator{allocator_, tile};
-    size_type current_node_index = *d_root_index_;
-    bool lead_lane = tile.thread_rank() == 0;
-    if (lead_lane) printf("coop find print\n");
-    for (size_type slice = 0; slice < key_length; slice++) {
-      const key_slice_type key_slice = key[slice];
-      const bool last_slice = (slice == key_length - 1);
-      if (lead_lane) printf("key[%u]: %u%s\n", slice, key_slice, last_slice ? " (last)" : "");
-      while (true) {
-        node_type current_node = node_type(
-            reinterpret_cast<elem_type*>(allocator.address(current_node_index)),
-            current_node_index,
-            tile);
-        current_node.load(cuda_memory_order::memory_order_seq_cst);
-        current_node.print();
-        if (current_node.is_border()) {
-          const bool found = current_node.get_key_value_from_node(key_slice, current_node_index, last_slice);
-          if (!found) {
-            // not exists
-            if (lead_lane) printf("value not found, exit\n");
-            return;
-          }
-          else {
-            // value retrieved in current_node_index. continue to next layer.
-            if (lead_lane) printf("move to next layer\n");
-            break;
-          }
-        }
-        else {
-          current_node_index = current_node.find_next(key_slice);
-          if (lead_lane) printf("proceed to next node in layer\n");
-        }
-      }
-    }
-  }
-
-  void debug_find_varlen_print(key_slice_type* key, size_type* length) {
-    debug_find_varlen_print_kernel<<<1, 32>>>(*this, key, length);
-  }
-
   template <typename T, int MAX_SIZE>
   struct traversal_stack {
     DEVICE_QUALIFIER traversal_stack(T* shared_stack, T* shared_meta)
@@ -1105,7 +1195,7 @@ struct gpu_masstree {
       current_node.load();
       if (num_traversed_children == 0) {
         // first time visiting
-        task.exec(current_node);
+        task.exec(current_node, allocator);
       }
       if (current_node.num_keys() == num_traversed_children) {
         // done traversing this node
@@ -1115,7 +1205,7 @@ struct gpu_masstree {
         // num_traversed_children++
         stack.top_metadata()++;
         if ((!current_node.is_border()) ||
-            (current_node.is_location_link_or_value(num_traversed_children) == node_type::BORDER_ENTRY_LINK)) {
+            (current_node.get_keystate_from_location(num_traversed_children) == node_type::KEYSTATE_LINK)) {
           // If it's a interior node, push the next node
           // If it's a border node but link entry, push the next layer root
           stack.push(current_node.get_value_from_location(num_traversed_children), 0);
@@ -1127,8 +1217,8 @@ struct gpu_masstree {
   struct print_node_task {
     DEVICE_QUALIFIER void init(bool lead_lane) {}
     template <typename node_type>
-    DEVICE_QUALIFIER void exec(const node_type& node) {
-      node.print();
+    DEVICE_QUALIFIER void exec(const node_type& node, device_allocator_context_type& allocator) {
+      node.print(allocator);
     }
     DEVICE_QUALIFIER void fini() {}
   };
@@ -1145,25 +1235,26 @@ struct gpu_masstree {
       num_nodes_ = 0;
     }
     template <typename node_type>
-    DEVICE_QUALIFIER void exec(const node_type& node) {
+    DEVICE_QUALIFIER void exec(const node_type& node, device_allocator_context_type& allocator) {
       uint32_t num_entries = 0;
       if (node.is_border()) {
         uint16_t num_keys = node.num_keys();
         key_slice_type before_key = 0;
-        bool before_link_or_value = false;
+        uint32_t before_keystate = 0;
         for (uint16_t i = 0; i < num_keys; i++) {
           auto key = node.get_key_from_location(i);
-          auto link_or_value = node.is_location_link_or_value(i);
+          auto keystate = node.get_keystate_from_location(i);
           if (i > 0) {
             assert(before_key <= key);
             if (before_key == key) {
-              assert((before_link_or_value == node_type::BORDER_ENTRY_VALUE && 
-                      link_or_value == node_type::BORDER_ENTRY_LINK));
+              assert((before_keystate == node_type::KEYSTATE_VALUE && 
+                      keystate != node_type::KEYSTATE_VALUE));
             }
           }
           before_key = key;
-          before_link_or_value = link_or_value;
-          if (node.is_location_link_or_value(i) == node_type::BORDER_ENTRY_VALUE) {
+          before_keystate = keystate;
+          if (node.get_keystate_from_location(i) == node_type::KEYSTATE_VALUE ||
+              node.get_keystate_from_location(i) == node_type::KEYSTATE_SUFFIX) {
             num_entries++;
           }
         }
