@@ -259,7 +259,7 @@ struct gpu_masstree {
       if (found_keystate == node_type::KEYSTATE_SUFFIX) {
         auto suffix = suffix_type(
             reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-        suffix.template load<memory_order>();
+        suffix.template load_head<memory_order>();
         const bool suffix_eq = suffix.template streq<memory_order>(key + slice, key_length - slice);
         return suffix_eq ? suffix.get_value() : invalid_value;
       }
@@ -500,7 +500,7 @@ struct gpu_masstree {
         else { // node_type::KEYSTATE_SUFFIX
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
-          suffix.template load<cuda_memory_order::relaxed>();
+          suffix.template load_head<cuda_memory_order::relaxed>();
           key_slice_type mismatch_suffix_slice;
           int cmp = suffix.template strcmp<cuda_memory_order::relaxed>(key + slice, key_length - slice, &mismatch_suffix_slice);
           if (cmp == 0) { // already exists
@@ -657,7 +657,7 @@ struct gpu_masstree {
         else {  // KEYSTATE_SUFFIX
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(next_index)), next_index, tile, allocator);
-          suffix.template load<memory_order>();
+          suffix.template load_head<memory_order>();
           const bool suffix_eq = suffix.template streq<memory_order>(key + slice, key_length - slice);
           if (suffix_eq) {
             // key exists, erase suffix value and mark suffix nodes garbage
@@ -1242,7 +1242,7 @@ struct gpu_masstree {
             auto suffix_index = node.get_value_from_location(i);
             auto suffix = masstree_suffix_node<tile_type, device_allocator_context_type>(
                 reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
-            suffix.template load<cuda_memory_order::weak>();
+            suffix.template load_head<cuda_memory_order::weak>();
             num_suffix_nodes_ += suffix.get_num_nodes();
           }
           before_key = key;

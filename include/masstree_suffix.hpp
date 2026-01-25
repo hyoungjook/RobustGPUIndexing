@@ -38,7 +38,7 @@ struct masstree_suffix_node {
       , allocator_(allocator) {}
 
   template <cuda_memory_order order>
-  DEVICE_QUALIFIER void load() {
+  DEVICE_QUALIFIER void load_head() {
     lane_elem_ = cuda_memory<elem_type, order>::load(node_ptr_ + tile_.thread_rank());
   }
   template <cuda_memory_order order>
