@@ -255,7 +255,7 @@ void validate(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_lengt
   testing_input input(num_keys, min_key_length, max_key_length);
   tree->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
-  tree->validate_tree();
+  tree->validate();
   input.free();
 }
 
@@ -335,7 +335,7 @@ void test_eraseall(btree* tree, uint32_t min_key_length_bytes, uint32_t max_key_
     auto found_value    = find_results[i];
     ASSERT_EQ(found_value, expected_value);
   }
-  tree->validate_tree();
+  tree->validate();
   find_results.free();
   input.free();
 }
@@ -549,6 +549,8 @@ TYPED_TEST(BTreeMapTest, RangeQuery##min_length##_##max_length) { \
 DECLARE_TESTS_FOR_KEY_LENGTHS(4, 4)
 DECLARE_TESTS_FOR_KEY_LENGTHS(64, 64)
 DECLARE_TESTS_FOR_KEY_LENGTHS(4, 64)
+DECLARE_TESTS_FOR_KEY_LENGTHS(200, 200)
+DECLARE_TESTS_FOR_KEY_LENGTHS(100, 200)
 
 }  // namespace
 

@@ -911,24 +911,3 @@ struct masstree_node {
   static  constexpr uint32_t keystate_mask_suffix_ = 0b10u;
 
 };
-
-template <int MAX_STACK_SIZE, typename Func, typename BTree>
-__global__ void traverse_tree_nodes_kernel(BTree tree) {
-  // called with single warp, BFS
-  assert(gridDim.x == 1 && gridDim.y == 1 && gridDim.z == 1);
-  assert(blockDim.x == 32 && blockDim.y == 1 && blockDim.z == 1);
-  auto block = cooperative_groups::this_thread_block();
-  auto tile  = cooperative_groups::tiled_partition<BTree::cg_tile_size>(block);
-  __shared__ uint32_t stack[MAX_STACK_SIZE], metadata[MAX_STACK_SIZE];
-  Func task;
-  task.init(tile.thread_rank() == 0);
-  tree.cooperative_traverse_tree_nodes<MAX_STACK_SIZE>(&stack[0], &metadata[0], tile, task);
-  task.fini();
-}
-
-template <typename BTree>
-__global__ void debug_find_varlen_print_kernel(BTree tree, uint32_t* key, uint32_t* len) {
-  auto block = cooperative_groups::this_thread_block();
-  auto tile  = cooperative_groups::tiled_partition<BTree::cg_tile_size>(block);
-  tree.cooperative_debug_find_varlen_print(key, len[0], tile);
-}

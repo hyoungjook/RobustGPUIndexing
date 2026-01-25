@@ -64,6 +64,11 @@ struct masstree_suffix_node {
     }
   }
 
+  DEVICE_QUALIFIER uint32_t get_num_nodes() const {
+    auto length = get_key_length();
+    return (length + node_max_len_ - 1) / node_max_len_;
+  }
+
   DEVICE_QUALIFIER bool streq(const elem_type* key, uint32_t key_length, cuda_memory_order order = cuda_memory_order::memory_order_weak) const {
     // ignore first slice in the border node
     key++;

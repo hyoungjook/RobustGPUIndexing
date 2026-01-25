@@ -1144,51 +1144,22 @@ struct gpu_masstree {
 
  public:
   // device-side debug functions
-  template <typename T, int MAX_SIZE>
-  struct traversal_stack {
-    DEVICE_QUALIFIER traversal_stack(T* shared_stack, T* shared_meta)
-      : stack_(shared_stack), meta_(shared_meta), size_(0) {}
-    DEVICE_QUALIFIER bool empty() { return size_ == 0; }
-    DEVICE_QUALIFIER bool full() { return size_ == MAX_SIZE; }
-    DEVICE_QUALIFIER void push(T value, T metadata) {
-      assert(size_ < MAX_SIZE);
-      stack_[size_] = value;
-      meta_[size_] = metadata;
-      size_++;
-      __syncthreads();
-    }
-    DEVICE_QUALIFIER T top() {
-      assert(size_ > 0);
-      return stack_[size_ - 1];
-    }
-    DEVICE_QUALIFIER T& top_metadata() {
-      assert(size_ > 0);
-      return meta_[size_ - 1];
-    }
-    DEVICE_QUALIFIER void pop() {
-      assert(size_ > 0);
-      size_--;
-    }
-    T* stack_;
-    T* meta_;
-    uint32_t size_;
-  };
-
-  template <int MAX_STACK_SIZE, typename tile_type, typename Func>
-  DEVICE_QUALIFIER void cooperative_traverse_tree_nodes(uint32_t* shared_stack,
-                                                        uint32_t* shared_metadata,
-                                                        const tile_type& tile,
-                                                        Func& task) {
+  template <typename tile_type, typename Func>
+  DEVICE_QUALIFIER void cooperative_traverse_tree_nodes(Func& task, const tile_type& tile) {
     // debug-purpose, so inefficient implementation
     // called with single warp, BFS
     using node_type         = masstree_node<tile_type>;
+    using dynamic_stack_type = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
     device_allocator_context_type allocator{allocator_, tile};
     // stack: stores node indexes. metadata: # of traversed children
-    traversal_stack<uint32_t, MAX_STACK_SIZE> stack(shared_stack, shared_metadata);
-    stack.push(*d_root_index_, 0);
-    while (!stack.empty()) {
-      uint32_t current_node_index = stack.top();
-      uint32_t num_traversed_children = stack.top_metadata();
+    dynamic_stack_type stack(allocator, tile);
+    uint32_t current_node_index = *d_root_index_;
+    uint32_t num_traversed_children = 0;
+    stack.push(current_node_index, num_traversed_children);
+    uint32_t stack_size = 1;
+    while (stack_size > 0) {
+      stack.pop(current_node_index, num_traversed_children);
+      stack_size--;
       node_type current_node = node_type(
           reinterpret_cast<elem_type*>(allocator.address(current_node_index)),
           current_node_index,
@@ -1196,37 +1167,43 @@ struct gpu_masstree {
       current_node.load();
       if (num_traversed_children == 0) {
         // first time visiting
-        task.exec(current_node, allocator);
+        task.exec(current_node, tile, allocator);
       }
-      if (current_node.num_keys() == num_traversed_children) {
-        // done traversing this node
-        stack.pop();
-      }
-      else {
-        // num_traversed_children++
-        stack.top_metadata()++;
+      if (num_traversed_children < current_node.num_keys()) {
+        num_traversed_children++;
+        stack.push(current_node_index, num_traversed_children);
+        num_traversed_children--;
+        stack_size++;
         if ((!current_node.is_border()) ||
             (current_node.get_keystate_from_location(num_traversed_children) == node_type::KEYSTATE_LINK)) {
           // If it's a interior node, push the next node
           // If it's a border node but link entry, push the next layer root
-          stack.push(current_node.get_value_from_location(num_traversed_children), 0);
+          current_node_index = current_node.get_value_from_location(num_traversed_children);
+          num_traversed_children = 0;
+          stack.push(current_node_index, num_traversed_children);
+          stack_size++;
         }
       }
     }
+    stack.destroy();
+  }
+
+  template <typename func>
+  void traverse_tree_nodes() {
+    kernels::traverse_tree_nodes_kernel<func><<<1, 32>>>(*this);
+    cudaDeviceSynchronize();
   }
 
   struct print_node_task {
     DEVICE_QUALIFIER void init(bool lead_lane) {}
-    template <typename node_type>
-    DEVICE_QUALIFIER void exec(const node_type& node, device_allocator_context_type& allocator) {
+    template <typename node_type, typename tile_type>
+    DEVICE_QUALIFIER void exec(const node_type& node, const tile_type& tile, device_allocator_context_type& allocator) {
       node.print(allocator);
     }
     DEVICE_QUALIFIER void fini() {}
   };
-  void print_tree_nodes() {
-    std::cout << "===== masstree.print_tree_nodes =====" << std::endl;
-    traverse_tree_nodes_kernel<200, print_node_task><<<1, 32>>>(*this);
-    cudaDeviceSynchronize();
+  void print() {
+    traverse_tree_nodes<print_node_task>();
   }
 
   struct validate_tree_task {
@@ -1234,9 +1211,10 @@ struct gpu_masstree {
       lead_lane_ = lead_lane;
       num_entries_ = 0;
       num_nodes_ = 0;
+      num_suffix_nodes_ = 0;
     }
-    template <typename node_type>
-    DEVICE_QUALIFIER void exec(const node_type& node, device_allocator_context_type& allocator) {
+    template <typename node_type, typename tile_type>
+    DEVICE_QUALIFIER void exec(const node_type& node, const tile_type& tile, device_allocator_context_type& allocator) {
       uint32_t num_entries = 0;
       if (node.is_border()) {
         uint16_t num_keys = node.num_keys();
@@ -1252,10 +1230,17 @@ struct gpu_masstree {
                       keystate != node_type::KEYSTATE_VALUE));
             }
           }
+          if (keystate == node_type::KEYSTATE_SUFFIX) {
+            auto suffix_index = node.get_value_from_location(i);
+            auto suffix = masstree_suffix_node<tile_type, device_allocator_context_type>(
+                reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
+            suffix.load();
+            num_suffix_nodes_ += suffix.get_num_nodes();
+          }
           before_key = key;
           before_keystate = keystate;
-          if (node.get_keystate_from_location(i) == node_type::KEYSTATE_VALUE ||
-              node.get_keystate_from_location(i) == node_type::KEYSTATE_SUFFIX) {
+          if (keystate == node_type::KEYSTATE_VALUE ||
+              keystate == node_type::KEYSTATE_SUFFIX) {
             num_entries++;
           }
         }
@@ -1265,15 +1250,14 @@ struct gpu_masstree {
     }
     DEVICE_QUALIFIER void fini() {
       if (lead_lane_) {
-        printf("%lu entries, %lu nodes found\n", num_entries_, num_nodes_);
+        printf("%lu entries, %lu nodes (+%lu suffix nodes) found\n", num_entries_, num_nodes_, num_suffix_nodes_);
       }
     }
     bool lead_lane_;
-    uint64_t num_entries_, num_nodes_;
+    uint64_t num_entries_, num_nodes_, num_suffix_nodes_;
   };
-  void validate_tree() {
-    traverse_tree_nodes_kernel<200, validate_tree_task><<<1, 32>>>(*this);
-    cudaDeviceSynchronize();
+  void validate() {
+    traverse_tree_nodes<validate_tree_task>();
   }
 
  private:

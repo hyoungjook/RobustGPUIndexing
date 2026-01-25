@@ -299,5 +299,18 @@ struct range_device_func {
   }
 };
 
+template <typename func, typename masstree>
+__global__ void traverse_tree_nodes_kernel(masstree tree) {
+  // called with single warp; not parallelized for debug purpose
+  assert(gridDim.x == 1 && gridDim.y == 1 && gridDim.z == 1);
+  assert(blockDim.x == 32 && blockDim.y == 1 && blockDim.z == 1);
+  auto block = cg::this_thread_block();
+  auto tile  = cg::tiled_partition<masstree::cg_tile_size>(block);
+  func task;
+  task.init(tile.thread_rank() == 0);
+  tree.cooperative_traverse_tree_nodes(task, tile);
+  task.fini();
+}
+
 } // namespace kernels
 } // namespace GpuMasstree
