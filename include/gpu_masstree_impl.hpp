@@ -565,9 +565,12 @@ struct gpu_masstree {
               suffix.template retire<cuda_memory_order::relaxed>(reclaimer);
             }
             else {
-              suffix.template trim<cuda_memory_order::relaxed>(num_matches + 1, reclaimer);
-              suffix.template store_head<cuda_memory_order::relaxed>();
-              doubleton_node.insert(mismatch_suffix_slice, suffix.get_node_index(), node_type::KEYSTATE_SUFFIX);
+              auto new_suffix_index = allocator.allocate(tile);
+              auto new_suffix = suffix_type(
+                  reinterpret_cast<elem_type*>(allocator.address(new_suffix_index)), new_suffix_index, tile, allocator);
+              new_suffix.template move_from<cuda_memory_order::relaxed>(suffix, num_matches + 1, reclaimer);
+              new_suffix.template store_head<cuda_memory_order::relaxed>();
+              doubleton_node.insert(mismatch_suffix_slice, new_suffix_index, node_type::KEYSTATE_SUFFIX);
             }
             // insert suffix of this key
             assert(slice < key_length);

@@ -199,63 +199,66 @@ struct masstree_suffix_node {
   }
 
   template <cuda_memory_order order, typename reclaimer_type>
-  DEVICE_QUALIFIER void trim(uint32_t offset, reclaimer_type& reclaimer) {
-    // trim first offset elements
-    auto new_length = get_key_length() - offset;
+  DEVICE_QUALIFIER void move_from(masstree_suffix_node<tile_type, allocator_type>& src,
+                                  uint32_t offset,
+                                  reclaimer_type& reclaimer) {
+    // move elements from src[offset:] and retire all nodes in src
+    auto new_length = src.get_key_length() - offset;
     set_length(new_length);
-    // retire nodes until the node with valid element
-    elem_type src_lane_elem = lane_elem_;
+    update_value(src.get_value());
+    // skip src nodes until the first element
+    reclaimer.retire(src.get_node_index(), tile_);
     while (offset >= node_max_len_) {
-      auto next_index = tile_.shfl(src_lane_elem, next_lane_);
-      reclaimer.retire(node_index_, tile_);
-      node_index_ = next_index;
-      node_ptr_ = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
-      src_lane_elem = cuda_memory<elem_type, order>::load(node_ptr_ + tile_.thread_rank());
+      src.node_index_ = src.get_next();
+      src.node_ptr_ = reinterpret_cast<elem_type*>(allocator_.address(src.node_index_));
+      src.template load_head<order>();
+      reclaimer.retire(src.node_index_, tile_);
       offset -= node_max_len_;
     }
-    if (offset == 0) { return; }
-    // node_index_ and node_ptr_ are fixed from now
-    // src_lane_elem has the contents of node_index_ (new head)
+    // copy elements into this
     elem_type dst_lane_elem;
     elem_type* dst_ptr = nullptr; // NULL means it's head
     while (true) {
       // phase 1. copy src[offset:node_max_len) -> dst[0:node_max_len-offset) in same node
       uint32_t copy_count = min(new_length, node_max_len_ - offset);
-      dst_lane_elem = tile_.shfl_down(src_lane_elem, offset);
+      dst_lane_elem = tile_.shfl_down(src.lane_elem_, offset);
       new_length -= copy_count;
       if (new_length == 0) { break; }
       // phase 2. copy src.next[0:offset) -> dst[node_max_len-offset:node_max_len)
-      auto src_next_index = tile_.shfl(src_lane_elem, next_lane_);
-      auto* src_next_ptr = reinterpret_cast<elem_type*>(allocator_.address(src_next_index));
-      src_lane_elem = cuda_memory<elem_type, order>::load(src_next_ptr + tile_.thread_rank());
-      copy_count = min(new_length, offset);
-      auto up_src_elem = tile_.shfl_up(src_lane_elem, node_max_len_ - offset);
-      if (node_max_len_ - offset <= tile_.thread_rank()) {
-        dst_lane_elem = up_src_elem;
-      }
-      new_length -= copy_count;
-      if (new_length == 0) {
-        // if new_length ends here, it means the last node is not used any more
-        reclaimer.retire(src_next_index, tile_);
-        break;
-      }
-      // phase 3. store dst
-      if (tile_.thread_rank() < node_max_len_) {
-        if (dst_ptr) {
-          cuda_memory<elem_type, order>::store(dst_ptr + tile_.thread_rank(), dst_lane_elem);
+      if (offset > 0) {
+        src.node_index_ = src.get_next();
+        src.node_ptr_ = reinterpret_cast<elem_type*>(allocator_.address(src.node_index_));
+        src.template load_head<order>();
+        reclaimer.retire(src.node_index_, tile_);
+        copy_count = min(new_length, offset);
+        auto up_src_elem = tile_.shfl_up(src.lane_elem_, node_max_len_ - offset);
+        if (node_max_len_ - offset <= tile_.thread_rank()) {
+          dst_lane_elem = up_src_elem;
         }
-        else {
-          lane_elem_ = dst_lane_elem;
-        }
+        new_length -= copy_count;
+        if (new_length == 0) { break; }
       }
-      dst_ptr = src_next_ptr;
-    }
-    // flush dst_lane_elem
-    if (tile_.thread_rank() < node_max_len_) {
+      // phase 3. store dst & allocate dst.next
+      auto dst_index = allocator_.allocate(tile_);
+      if (tile_.thread_rank() == next_lane_) {
+        dst_lane_elem = dst_index;
+      }
       if (dst_ptr) {
         cuda_memory<elem_type, order>::store(dst_ptr + tile_.thread_rank(), dst_lane_elem);
       }
       else {
+        if (tile_.thread_rank() < node_max_len_ || tile_.thread_rank() == next_lane_) {
+          lane_elem_ = dst_lane_elem;
+        }
+      }
+      dst_ptr = reinterpret_cast<elem_type*>(allocator_.address(dst_index));
+    }
+    // flush dst_lane_elem
+    if (dst_ptr) {
+      cuda_memory<elem_type, order>::store(dst_ptr + tile_.thread_rank(), dst_lane_elem);
+    }
+    else {
+      if (tile_.thread_rank() < node_max_len_ || tile_.thread_rank() == next_lane_) {
         lane_elem_ = dst_lane_elem;
       }
     }
