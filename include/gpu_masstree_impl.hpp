@@ -358,13 +358,15 @@ struct gpu_masstree {
               lower_key_slice, lower_key_more, lower_key, lower_key_length, passed_lower_key,
               upper_key_slice, upper_key_more, upper_key, upper_key_length, ignore_upper_key,
               out_max_count, scan_op, out_value, out_keys, out_key_lengths, layer, out_key_max_length, allocator);
-          out_count += count;
-          out_max_count -= count;
-          if (out_value) { out_value += count; }
-          if (out_key_lengths) {out_key_lengths += count;}
-          if (out_keys) {
-            utils::fill_output_keys_from_key_slice_stack<0>(key_slice_and_node_index_stack, out_keys, out_key_max_length, layer, count);
-            out_keys += (out_key_max_length * count);
+          if (count > 0) {
+            out_count += count;
+            out_max_count -= count;
+            if (out_value) { out_value += count; }
+            if (out_key_lengths) {out_key_lengths += count;}
+            if (out_keys) {
+              utils::fill_output_keys_from_key_slice_stack<0>(key_slice_and_node_index_stack, out_keys, out_key_max_length, layer, count);
+              out_keys += (out_key_max_length * count);
+            }
           }
           //  if got enough outputs, end scanning
           if (out_max_count <= 0) { scan_op = -3; }

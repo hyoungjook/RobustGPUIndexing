@@ -136,16 +136,18 @@ DEVICE_QUALIFIER void fill_output_keys_from_key_slice_stack(const dynamic_stack_
                                                             uint32_t layer,
                                                             uint32_t count) {
   // used for gpu_masstree::cooperative_range()
-  if (s.top_ < 0 || count == 0) { return; }
+  if (layer == 0 || count == 0) { return; }
   auto lane_elem = s.lane_elem_[key_slice_idx];
   int top = s.top_;
   while (true) {
     // store stack_register[0, top] -> out_keys[layer-top-1, layer-1]
     assert(layer >= top + 1);
-    layer -= (top + 1);
-    for (uint32_t i = 0; i < count; i++) {
-      if (s.tile_.thread_rank() <= top) {
-        out_keys[i * out_key_max_length + layer + s.tile_.thread_rank()] = lane_elem;
+    if (top >= 0) {
+      layer -= (top + 1);
+      for (uint32_t i = 0; i < count; i++) {
+        if (s.tile_.thread_rank() <= top) {
+          out_keys[i * out_key_max_length + layer + s.tile_.thread_rank()] = lane_elem;
+        }
       }
     }
     // fetch node into register
