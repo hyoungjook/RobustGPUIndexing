@@ -520,7 +520,7 @@ struct gpu_masstree {
             return false;
           }
         }
-        else { // node_type::KEYSTATE_SUFFIX
+        else if constexpr (enable_suffix) { // node_type::KEYSTATE_SUFFIX
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(current_node_index)), current_node_index, tile, allocator);
           suffix.template load_head<cuda_memory_order::relaxed>();
@@ -679,6 +679,11 @@ struct gpu_masstree {
           return false; // key not exists
         }
       }
+      if (border_node.is_garbage()) {
+        // garbage after side-traversal means it's empty root garbage
+        if (border_node_locked_by_me) { border_node.unlock(); }
+        return false;
+      }
       if (more_key) {
         // try traverse
         size_type next_index;
@@ -723,15 +728,14 @@ struct gpu_masstree {
                 continue;
               }
             }
+            if (border_node.is_garbage()) {
+              border_node.unlock();
+              return false;
+            }
             if (!border_node.is_border()) {
               border_node.unlock();
               retry_with_merge = true;
               continue;
-            }
-            if (border_node.is_garbage()) { // this means it's collected empty root
-              assert(border_node.is_root());
-              border_node.unlock();
-              return false;
             }
             const bool success = border_node.erase(key_slice, node_type::KEYSTATE_SUFFIX);
             if (!success) {
