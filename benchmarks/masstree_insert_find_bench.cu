@@ -29,12 +29,8 @@
 #include <rkg.hpp>
 #include <string>
 #include <unordered_set>
-#include <validation.hpp>
 #include <vector>
 #include <thread>
-
-#include <device_bump_allocator.hpp>
-#include <slab_alloc.hpp>
 
 using key_slice_type = uint32_t;
 using value_type = uint32_t;
@@ -44,20 +40,7 @@ struct bench_rates {
   float insertion_rate;
   float find_rate;
 };
-template <typename BTree, bool use_masstree>
-struct tree_init_helper {
-  struct masstree_helper {
-    typename BTree::host_allocator_type host_alloc;
-    typename BTree::host_reclaimer_type host_reclaim;
-    BTree tree;
-    masstree_helper(): host_alloc(), host_reclaim(), tree(host_alloc, host_reclaim) {}
-  };
-  struct blink_helper {
-    BTree tree;
-  };
-  using type = typename std::conditional<use_masstree, masstree_helper, blink_helper>::type;
-};
-template <typename BTree, bool use_masstree, bool fixlen_key>
+template <typename masstree_type, bool enable_suffix>
 bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>& d_keys,
                                           thrust::device_vector<size_type>& d_lengths,
                                           thrust::device_vector<value_type>& d_values,
@@ -76,19 +59,15 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
   std::size_t valid_count = 0;
 
   for (std::size_t exp = 0; exp < num_experiments; exp++) {
-    typename tree_init_helper<BTree, use_masstree>::type helper;
-    auto& tree = helper.tree;
+    typename masstree_type::host_allocator_type host_alloc;
+    typename masstree_type::host_reclaimer_type host_reclaim;
+    masstree_type tree(host_alloc, host_reclaim);
     auto memory_usage = utils::compute_device_memory_usage();
     std::cout << "Using: " << double(memory_usage.used_bytes) / double(1 << 30) << " GiBs"
               << std::endl;
     gpu_timer insert_timer(insertion_stream);
     insert_timer.start_timer();
-    if constexpr (use_masstree) {
-      tree.insert(d_keys.data().get(), max_key_length, fixlen_key ? nullptr : d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream);
-    }
-    else {
-      tree.insert(d_keys.data().get(), d_values.data().get(), num_keys, insertion_stream);
-    }
+    tree.insert(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream, false, enable_suffix);
     insert_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     auto insertion_elapsed = insert_timer.get_elapsed_s();
@@ -96,12 +75,7 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
 
     gpu_timer find_timer(find_stream);
     find_timer.start_timer();
-    if constexpr (use_masstree) {
-      tree.find(d_query_keys.data().get(), max_key_length, fixlen_key ? nullptr : d_query_lengths.data().get(), d_query_results.data().get(), num_keys, find_stream);
-    }
-    else {
-      tree.find(d_query_keys.data().get(), d_query_results.data().get(), num_keys, find_stream);
-    }
+    tree.find(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys, find_stream);
     find_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     auto find_elapsed = find_timer.get_elapsed_s();
@@ -122,9 +96,7 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
       }
     }
     if (validate_tree) {
-      if constexpr (use_masstree) {
-        tree.validate_tree();
-      }
+      tree.validate();
     }
   }
 
@@ -152,8 +124,6 @@ int main(int argc, char** argv) {
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
-  bool test_fixlen = get_arg_value<bool>(arguments, "test-fixlen").value_or(false);
-  bool test_blink = get_arg_value<bool>(arguments, "test-blink").value_or(false);
   bool validate_result   = get_arg_value<bool>(arguments, "validate-result").value_or(false);
   bool validate_tree   = get_arg_value<bool>(arguments, "validate-tree").value_or(false);
   std::string dataset_file = get_arg_value<std::string>(arguments, "dataset-file").value_or("");
@@ -262,9 +232,6 @@ int main(int argc, char** argv) {
   std::cout << "min_key_length = " << min_key_length << ", ";
   std::cout << "max_key_length = " << max_key_length << ", ";
   std::cout << "common_prefix_ratio = " << common_prefix_ratio << std::endl;
-  static constexpr int branching_factor = 16;
-  using node_type           = GpuBTree::node_type<key_slice_type, value_type, branching_factor>;
-  using slab_allocator_type = device_allocator::SlabAllocLight<node_type, 4, 1024 * 8, 32, 128>;
   using simple_bump_alloc_type = simple_bump_allocator<128>;
   using simple_slab_alloc_type = simple_slab_allocator<128>;
   using simple_dummy_reclaim_type = simple_dummy_reclaimer;
@@ -272,29 +239,15 @@ int main(int argc, char** argv) {
   using masstree_slab_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_dummy_reclaim_type>;
   using masstree_slab_reclaim_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type>;
 
-  using slab_allocator_type_blink = device_allocator::SlabAllocLight<node_type, 4, 1024 * 8, 16, 128>;
-  using blink_tree_slab_type =
-      GpuBTree::gpu_blink_tree<key_slice_type, value_type, branching_factor, slab_allocator_type_blink>;
-
-  {
-    std::cout << "Benchmarking masstree_slab_reclaim_type" << std::endl;
-    bench_masstree_insertion_find<masstree_slab_reclaim_type, true, false>(
-      d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-      num_keys, max_key_length, num_experiments, validate_result, validate_tree
-    );
-  }
-  if (test_fixlen && dataset_file == "" && min_key_length == max_key_length) {
-    std::cout << "Benchmarking masstree_slab_type with fixlen keys" << std::endl;
-    bench_masstree_insertion_find<masstree_slab_type, true, true>(
-      d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-      num_keys, max_key_length, num_experiments, validate_result, validate_tree
-    );
-  }
-  if (test_blink && max_key_length == 1) {
-    std::cout << "Benchmarking blink_tree_slab_type" << std::endl;
-    bench_masstree_insertion_find<blink_tree_slab_type, false, false>(
-      d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-      num_keys, max_key_length, num_experiments, validate_result, validate_tree
-    );
-  }
+  std::cout << "Benchmarking masstree_slab_reclaim_type no-suffix" << std::endl;
+  bench_masstree_insertion_find<masstree_slab_reclaim_type, false>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+    num_keys, max_key_length, num_experiments, validate_result, validate_tree
+  );
+  std::cout << "Benchmarking masstree_slab_reclaim_type suffix" << std::endl;
+  bench_masstree_insertion_find<masstree_slab_reclaim_type, true>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+    num_keys, max_key_length, num_experiments, validate_result, validate_tree
+  );
+  
 }

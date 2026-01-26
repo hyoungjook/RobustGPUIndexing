@@ -667,18 +667,15 @@ struct gpu_masstree {
     [[maybe_unused]] dynamic_stack_type per_layer_indexes(allocator, tile); // (root_index, border_index)
     size_type current_node_index = *d_root_index_;
     uint32_t slice = 0;
+    bool retry_with_merge = false;
     while (slice < key_length) {
       key_slice_type key_slice = key[slice];
       const bool more_key = (slice < key_length - 1);
       [[maybe_unused]] size_type border_node_index;
       node_type border_node(tile);
       // traverse the layer
-      if constexpr (!do_merge) {
-        const bool lock_border_node = !more_key;
-        border_node = coop_traverse_until_border<concurrent>(key_slice, current_node_index, tile, allocator, lock_border_node, 
-                                                             do_remove_empty_root ? &border_node_index : nullptr);
-      }
-      else {
+      bool border_node_locked_by_me = true;
+      if (do_merge && retry_with_merge) {
         merge_early_exit_check early_exit_check;
         border_node = coop_traverse_until_border_merge(key_slice, more_key, current_node_index,
                                                        tile, allocator, reclaimer, early_exit_check,
@@ -686,8 +683,14 @@ struct gpu_masstree {
         if (early_exit_check.early_exited_) {
           return false; // key not exists
         }
+        retry_with_merge = false;
       }
-      const bool border_node_locked_by_me = (do_merge) || (!more_key);
+      else {
+        const bool lock_border_node = !more_key;
+        border_node = coop_traverse_until_border<concurrent>(key_slice, current_node_index, tile, allocator, lock_border_node, 
+                                                             do_remove_empty_root ? &border_node_index : nullptr);
+        border_node_locked_by_me = lock_border_node;
+      }
       if (more_key) {
         // try traverse
         size_type next_index;
@@ -711,6 +714,11 @@ struct gpu_masstree {
           const bool suffix_eq = suffix.template streq<memory_order>(key + slice, key_length - slice);
           if (suffix_eq) {
             // key exists, erase suffix value and mark suffix nodes garbage
+            if (do_merge && border_node.is_underflow()) {
+              if (border_node_locked_by_me) { border_node.unlock(); }
+              retry_with_merge = true;
+              continue;
+            }
             if (!border_node_locked_by_me) {
               border_node.lock();
               border_node.template load<cuda_memory_order::relaxed>();
@@ -718,10 +726,29 @@ struct gpu_masstree {
                 size_type node_index;
                 traverse_side_links_with_locks(border_node, node_index, key_slice, tile, allocator);
               }
+              if (do_merge && border_node.is_underflow()) {
+                border_node.unlock();
+                retry_with_merge = true;
+                continue;
+              }
             }
-            assert(current_node.is_border() && !current_node.is_garbage()); // TODO handle this case?
+            if (!border_node.is_border()) {
+              border_node.unlock();
+              retry_with_merge = true;
+              continue;
+            }
+            if (border_node.is_garbage()) { // this means it's collected empty root
+              assert(border_node.is_root());
+              border_node.unlock();
+              return false;
+            }
             const bool success = border_node.erase(key_slice, node_type::KEYSTATE_SUFFIX);
-            assert(success);  // TODO might fail after lock?
+            if (!success) {
+              // something changed after lock
+              border_node.unlock();
+              retry_with_merge = true;
+              continue;
+            }
             border_node.template store<cuda_memory_order::relaxed>();
             border_node.unlock();
             suffix.template retire<memory_order>(reclaimer, next_index);
@@ -734,6 +761,12 @@ struct gpu_masstree {
       }
       else {  // !more_key
         // erase VALUE entry if exists
+        assert(border_node_locked_by_me);
+        if (do_merge && border_node.is_underflow()) {
+          border_node.unlock();
+          retry_with_merge = true;
+          continue;
+        }
         const bool success = border_node.erase(key_slice, node_type::KEYSTATE_VALUE);
         if (success) {
           border_node.template store<cuda_memory_order::relaxed>();
@@ -825,7 +858,10 @@ struct gpu_masstree {
           if constexpr (concurrent) {
             traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
           }
-          assert(current_node.is_border() && !current_node.is_garbage()); // TODO handle this case?
+          if (!current_node.is_border()) {
+            current_node.unlock();
+            continue; // retry traversal to border
+          }
         }
         if (node_index != nullptr) { *node_index = current_node_index; }
         return current_node;
