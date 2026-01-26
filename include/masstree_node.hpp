@@ -283,34 +283,79 @@ struct masstree_node {
   DEVICE_QUALIFIER bool cmp_key(const key_type& k1, bool morekey1, const key_type& k2, bool morekey2) const {
     return (k1 < k2) || ((k1 == k2) && (static_cast<int>(morekey1) <= static_cast<int>(morekey2)));
   }
-  template <cuda_memory_order order, typename allocator_type>
-  DEVICE_QUALIFIER uint32_t do_scan(bool per_lane_in_range,
-                                    const size_type out_max_count,
-                                    int& link_entry_location,
-                                    allocator_type& allocator,
-                                    value_type* out_value,
-                                    key_type* out_keys,
-                                    const size_type& layer,
-                                    const size_type& out_key_max_length) const {
-    const uint32_t in_range_ballot = tile_.ballot(per_lane_in_range);
+  template <bool use_upper_key, cuda_memory_order order, typename allocator_type>
+  DEVICE_QUALIFIER uint32_t scan(const key_type& lower_key_slice,
+                                 const bool lower_key_more,
+                                 const key_type* lower_key,         // original argument
+                                 const size_type lower_key_length,  // original argument
+                                 bool& passed_lower_key,
+                                 const key_type& upper_key_slice,
+                                 const bool upper_key_more,
+                                 const key_type* upper_key,         // original argument
+                                 const size_type upper_key_length,  // original argument
+                                 const bool ignore_upper_key,
+                                 const size_type out_max_count,
+                                 int& link_entry_location,
+                                 value_type* out_value,
+                                 key_type* out_keys,
+                                 size_type* out_key_lengths,
+                                 const size_type& layer,
+                                 const size_type& out_key_max_length,
+                                 allocator_type& allocator) const {
+    using suffix_type = masstree_suffix_node<tile_type, allocator_type>;
+    // return values in range, until we meet the link entry
+    // the location of first in-range link entry is stored in link_entry_location
+    // if there's no link entry in range, link_entry_location = -1
+    assert(is_border());
+    link_entry_location = -1;
+    // compute in_range
+    bool in_range = is_valid_key_lane() &&
+        cmp_key(lower_key_slice, lower_key_more, lane_elem_, keystate_has_more_key(keystate_)) &&
+        (!use_upper_key || (ignore_upper_key || cmp_key(lane_elem_, keystate_has_more_key(keystate_), upper_key_slice, upper_key_more)));
+    uint32_t in_range_ballot = tile_.ballot(in_range);
     if (in_range_ballot == 0) {
-      link_entry_location = -1;
       return 0;
     }
-    const int first_location = __ffs(in_range_ballot) - 1;
+    // compute first location
+    int first_location = __ffs(in_range_ballot) - 1;
+    if (!passed_lower_key) {
+      const bool same_slice = (get_key_from_location(first_location) == lower_key_slice);
+      const auto first_keystate = get_keystate_from_location(first_location);
+      passed_lower_key = !(same_slice && first_keystate == KEYSTATE_LINK);
+      // adjust required if (suffix < lower_key)
+      if (same_slice && first_keystate == KEYSTATE_SUFFIX) {
+        auto suffix_index = get_value_from_location(first_location);
+        auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
+        suffix.template load_head<order>();
+        if (suffix.template strcmp<order>(lower_key + layer, lower_key_length - layer) > 0) {
+          if (tile_.thread_rank() == first_location) { in_range = false; }
+          in_range_ballot = tile_.ballot(in_range);
+          if (in_range_ballot == 0) {
+            return 0;
+          }
+          first_location = __ffs(in_range_ballot) - 1;
+        }
+      }
+    }
+    // compute last location until link
     int last_location = utils::bits::bfind(in_range_ballot) + 1;
-    if (get_keystate_from_location(first_location) == KEYSTATE_SUFFIX) {
-      // TODO compare lower_key with suffix and decide whether to do first_location++
-    }
-    if (get_keystate_from_location(last_location) == KEYSTATE_SUFFIX) {
-      // TODO similar
-    }
-    const bool in_range_and_link = per_lane_in_range && (keystate_ == KEYSTATE_LINK);
+    const bool in_range_and_link = in_range && (keystate_ == KEYSTATE_LINK);
     const uint32_t in_range_and_link_ballot = tile_.ballot(in_range_and_link);
-    link_entry_location = -1;
     if (in_range_and_link_ballot != 0) {
       link_entry_location = __ffs(in_range_and_link_ballot) - 1;
       last_location = link_entry_location;
+    }
+    if (use_upper_key && !ignore_upper_key && link_entry_location < 0) {
+      // adjust required if (high_key < suffix)
+      if (get_key_from_location(last_location - 1) == upper_key_slice &&
+          get_keystate_from_location(last_location - 1) == KEYSTATE_SUFFIX) {
+        auto suffix_index = get_value_from_location(last_location - 1);
+        auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
+        suffix.template load_head<order>();
+        if (suffix.template strcmp<order>(upper_key + layer, upper_key_length - layer) < 0) {
+          last_location--;
+        }
+      }
     }
     // results up to out_max_count
     int count = last_location - first_location;
@@ -321,55 +366,44 @@ struct masstree_node {
     }
     // store results
     if (count > 0) {
-      if (out_value != nullptr &&
-          get_value_lane_from_location(first_location) <= tile_.thread_rank() &&
-          tile_.thread_rank() < get_value_lane_from_location(last_location)) {
-        out_value[tile_.thread_rank() - get_value_lane_from_location(first_location)] =
-          (keystate_ != KEYSTATE_SUFFIX) ? lane_elem_ : masstree_suffix_node<tile_type, allocator_type>::fetch_value_only<order>(lane_elem_, allocator);
+      in_range = (first_location <= tile_.thread_rank() && tile_.thread_rank() < last_location);
+      auto values_to_key_lanes = tile_.shfl_down(lane_elem_, node_width);
+      // store values
+      if (out_value) {
+        if (in_range) {
+          out_value[tile_.thread_rank() - first_location] =
+            (keystate_ != KEYSTATE_SUFFIX) ? values_to_key_lanes :
+              suffix_type::fetch_value_only<order>(values_to_key_lanes, allocator);
+        }
       }
-      if (out_keys != nullptr &&
-          get_key_lane_from_location(first_location) <= tile_.thread_rank() &&
-          tile_.thread_rank() < get_key_lane_from_location(last_location)) {
-        out_keys[(tile_.thread_rank() - get_key_lane_from_location(first_location)) * out_key_max_length + layer] = lane_elem_;
-        // flush suffix keys
+      if (out_key_lengths) {
+        // store key lengths
+        if (in_range) {
+          out_key_lengths[tile_.thread_rank() - first_location] =
+            layer + 1 + ((keystate_ != KEYSTATE_SUFFIX) ? 0 :
+              suffix_type::fetch_length_only<order>(values_to_key_lanes, allocator));
+        }
+      }
+      if (out_keys) {
+        // store key slice of this layer
+        if (in_range) {
+          out_keys[(tile_.thread_rank() - first_location) * out_key_max_length + layer] = lane_elem_;
+        }
+        // for suffix entries, store key slice of later layers too
+        bool to_flush = in_range && keystate_ == KEYSTATE_SUFFIX;
+        uint32_t flush_queue = tile_.ballot(to_flush);
+        while (flush_queue) {
+          auto cur_location = __ffs(flush_queue) - 1;
+          auto suffix_index = get_value_from_location(cur_location);
+          auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
+          suffix.template load_head<order>();
+          suffix.template flush<order>(out_keys + ((cur_location - first_location) * out_key_max_length + layer));
+          if (tile_.thread_rank() == cur_location) { to_flush = false; }
+          flush_queue = tile_.ballot(to_flush);
+        }
       }
     }
-    // return value: location of the link entry. If no link entry in range, return -1.
     return count;
-  }
-  template <cuda_memory_order order>
-  DEVICE_QUALIFIER uint32_t scan(const key_type& lower_key,
-                                 const bool lower_key_more,
-                                 const size_type out_max_count,
-                                 int& link_entry_location,
-                                 value_type* out_value,
-                                 key_type* out_keys,
-                                 const size_type& layer,
-                                 const size_type& out_key_max_length) const {
-    // return values in range, until we meet the link entry
-    assert(is_border());
-    const bool in_range = is_valid_key_lane() &&
-        cmp_key(lower_key, lower_key_more, lane_elem_, keystate_has_more_key(keystate_));
-    return do_scan<order>(in_range, out_max_count, link_entry_location, out_value, out_keys, layer, out_key_max_length);
-  }
-  template <cuda_memory_order order>
-  DEVICE_QUALIFIER uint32_t scan(const key_type& lower_key,
-                                 const bool lower_key_more,
-                                 const bool ignore_upper_bound,
-                                 const key_type& upper_key,
-                                 const bool upper_key_more,
-                                 const size_type out_max_count,
-                                 int& link_entry_location,
-                                 value_type* out_value,
-                                 key_type* out_keys,
-                                 const size_type& layer,
-                                 const size_type& out_key_max_length) const {
-    // return values in range, until we meet the link entry
-    assert(is_border());
-    const bool in_range = is_valid_key_lane() &&
-        cmp_key(lower_key, lower_key_more, lane_elem_, keystate_has_more_key(keystate_)) &&
-        (ignore_upper_bound || cmp_key(lane_elem_, keystate_has_more_key(keystate_), upper_key, upper_key_more));
-    return do_scan<order>(in_range, out_max_count, link_entry_location, out_value, out_keys, layer, out_key_max_length);
   }
 
   DEVICE_QUALIFIER int get_split_left_width() const {
@@ -836,7 +870,7 @@ struct masstree_node {
         elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
         auto suffix = masstree_suffix_node<tile_type, allocator_type>(
             reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
-        suffix.template load<cuda_memory_order::weak>();
+        suffix.template load_head<cuda_memory_order::weak>();
         suffix.print();
       }
     }

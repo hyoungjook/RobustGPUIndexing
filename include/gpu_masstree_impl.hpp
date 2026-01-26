@@ -162,48 +162,48 @@ struct gpu_masstree {
     #undef erase_args
   }
 
-  void range(const key_slice_type* lower_keys,
-             const size_type* lower_key_lengths,
-             const size_type max_key_length,
-             const size_type max_count_per_query,
-             const size_type num_queries,
-             const key_slice_type* upper_keys = nullptr,
-             const size_type* upper_key_lengths = nullptr,
-             size_type* counts = nullptr,
-             value_type* values = nullptr,
-             key_slice_type* out_keys = nullptr,
-             size_type* out_key_lengths = nullptr,
-             cudaStream_t stream = 0,
-             bool concurrent = false) {
-    using range_bothbound_concurrent = kernels::range_device_func<true, true, key_slice_type, size_type, value_type>;
-    using range_bothbound_readonly = kernels::range_device_func<true, false, key_slice_type, size_type, value_type>;
-    using range_loweronly_concurrent = kernels::range_device_func<false, true, key_slice_type, size_type, value_type>;
-    using range_loweronly_readonly = kernels::range_device_func<false, false, key_slice_type, size_type, value_type>;
-    #define range_args .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,  \
+  void scan(const key_slice_type* lower_keys,
+            const size_type* lower_key_lengths,
+            const size_type max_key_length,
+            const size_type max_count_per_query,
+            const size_type num_queries,
+            const key_slice_type* upper_keys = nullptr,
+            const size_type* upper_key_lengths = nullptr,
+            size_type* counts = nullptr,
+            value_type* values = nullptr,
+            key_slice_type* out_keys = nullptr,
+            size_type* out_key_lengths = nullptr,
+            cudaStream_t stream = 0,
+            bool concurrent = false) {
+    using scan_bothbound_concurrent = kernels::scan_device_func<true, true, key_slice_type, size_type, value_type>;
+    using scan_bothbound_readonly = kernels::scan_device_func<true, false, key_slice_type, size_type, value_type>;
+    using scan_loweronly_concurrent = kernels::scan_device_func<false, true, key_slice_type, size_type, value_type>;
+    using scan_loweronly_readonly = kernels::scan_device_func<false, false, key_slice_type, size_type, value_type>;
+    #define scan_args .d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,  \
                        .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,  \
                        .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths, \
                        .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths
     if (upper_keys) {
       if (concurrent) {
-        range_bothbound_concurrent func{range_args};
+        scan_bothbound_concurrent func{scan_args};
         launch_batch_kernel(func, num_queries, stream);
       }
       else {
-        range_bothbound_readonly func{range_args};
+        scan_bothbound_readonly func{scan_args};
         launch_batch_kernel(func, num_queries, stream);
       }
     }
     else {
       if (concurrent) {
-        range_loweronly_concurrent func{range_args};
+        scan_loweronly_concurrent func{scan_args};
         launch_batch_kernel(func, num_queries, stream);
       }
       else {
-        range_loweronly_readonly func{range_args};
+        scan_loweronly_readonly func{scan_args};
         launch_batch_kernel(func, num_queries, stream);
       }
     }
-    #undef range_args
+    #undef scan_args
   }
 
   void test_concurrent_insert_erase(const key_slice_type* insert_keys,
@@ -305,17 +305,17 @@ struct gpu_masstree {
   }
 
   template <bool use_upper_key, bool concurrent, typename tile_type>
-  DEVICE_QUALIFIER size_type cooperative_range(const key_slice_type* lower_key,
-                                               const size_type lower_key_length,
-                                               const tile_type& tile,
-                                               device_allocator_context_type& allocator,
-                                               const key_slice_type* upper_key = nullptr,
-                                               const size_type upper_key_length = 1,
-                                               size_type out_max_count = 1,
-                                               value_type* out_value = nullptr,
-                                               key_slice_type* out_keys = nullptr,
-                                               size_type* out_key_lengths = nullptr,
-                                               const size_type out_key_max_length = 1) {
+  DEVICE_QUALIFIER size_type cooperative_scan(const key_slice_type* lower_key,
+                                              const size_type lower_key_length,
+                                              const tile_type& tile,
+                                              device_allocator_context_type& allocator,
+                                              const key_slice_type* upper_key = nullptr,
+                                              const size_type upper_key_length = 1,
+                                              size_type out_max_count = 1,
+                                              value_type* out_value = nullptr,
+                                              key_slice_type* out_keys = nullptr,
+                                              size_type* out_key_lengths = nullptr,
+                                              const size_type out_key_max_length = 1) {
     using node_type = masstree_node<tile_type>;
     using dynamic_stack_type_x2 = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
     using dynamic_stack_type_x1 = utils::dynamic_stack_u32<1, tile_type, device_allocator_context_type>;
@@ -354,29 +354,17 @@ struct gpu_masstree {
         if (border_node.is_garbage()) { scan_op = -1; }
         else {
           // scan a node and store outputs
-          uint32_t count;
-          if constexpr (use_upper_key) {
-            count = border_node.template scan<memory_order>(lower_key_slice, lower_key_more,
-                                                            ignore_upper_key, upper_key_slice, upper_key_more,
-                                                            out_max_count, scan_op, out_value, out_keys,
-                                                            layer, out_key_max_length);
-          }
-          else {
-            count = border_node.template scan<memory_order>(lower_key_slice, lower_key_more,
-                                                            out_max_count, scan_op, out_value, out_keys,
-                                                            layer, out_key_max_length);
-          }
-          assert(count <= out_max_count);
+          uint32_t count = border_node.template scan<use_upper_key, memory_order>(
+              lower_key_slice, lower_key_more, lower_key, lower_key_length, passed_lower_key,
+              upper_key_slice, upper_key_more, upper_key, upper_key_length, ignore_upper_key,
+              out_max_count, scan_op, out_value, out_keys, out_key_lengths, layer, out_key_max_length, allocator);
           out_count += count;
           out_max_count -= count;
           if (out_value) { out_value += count; }
+          if (out_key_lengths) {out_key_lengths += count;}
           if (out_keys) {
             utils::fill_output_keys_from_key_slice_stack<0>(key_slice_and_node_index_stack, out_keys, out_key_max_length, layer, count);
             out_keys += (out_key_max_length * count);
-          }
-          if (out_key_lengths) {
-            if (tile.thread_rank() < count) { out_key_lengths[tile.thread_rank()] = (layer + 1); }
-            out_key_lengths += count;
           }
           //  if got enough outputs, end scanning
           if (out_max_count <= 0) { scan_op = -3; }
@@ -393,9 +381,7 @@ struct gpu_masstree {
         if (scan_op != -1) { break; }
         current_node_index = border_node.get_sibling_index();
         border_node = node_type(
-            reinterpret_cast<key_slice_type*>(allocator.address(current_node_index)),
-            current_node_index,
-            tile);
+            reinterpret_cast<key_slice_type*>(allocator.address(current_node_index)), current_node_index, tile);
         border_node.template load<memory_order>();
       }
       // switch layer
@@ -415,7 +401,7 @@ struct gpu_masstree {
         // handle upper key
         if constexpr (use_upper_key) {
           ignore_upper_key_stack.push(static_cast<size_type>(ignore_upper_key));
-          // check if ignore the upper key
+          // check if ignore the upper key at next layer
           ignore_upper_key = ignore_upper_key ||
               (checkpoint_key_slice < upper_key_slice || layer == upper_key_length);
           // upper key for next layer

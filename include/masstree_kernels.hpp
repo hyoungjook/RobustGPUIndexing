@@ -238,7 +238,7 @@ struct erase_device_func {
 };
 
 template <bool use_upper_key, bool concurrent, typename key_slice_type, typename size_type, typename value_type>
-struct range_device_func {
+struct scan_device_func {
   static constexpr bool reclaim_required = false;
   // kernel args
   const key_slice_type* d_lower_keys;
@@ -284,7 +284,7 @@ struct range_device_func {
     auto cur_value = tile.shfl(regs.value, cur_rank);
     auto cur_out_key = tile.shfl(regs.out_key, cur_rank);
     auto cur_out_key_length = tile.shfl(regs.out_key_length, cur_rank);
-    auto cur_count = tree.template cooperative_range<use_upper_key, concurrent>(
+    auto cur_count = tree.template cooperative_scan<use_upper_key, concurrent>(
       cur_lower_key, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
       max_count_per_query, cur_value, cur_out_key, cur_out_key_length, max_key_length);
     if (tile.thread_rank() == cur_rank) {

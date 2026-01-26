@@ -179,6 +179,26 @@ struct masstree_suffix_node {
     }
   }
 
+  template <cuda_memory_order order>
+  DEVICE_QUALIFIER void flush(elem_type* key_buffer) {
+    // ignore first slice
+    key_buffer++;
+    auto this_length = get_key_length();
+    auto elem = lane_elem_;
+    while (true) {
+      auto count = min(this_length, node_max_len_);
+      if (tile_.thread_rank() < count) {
+        key_buffer[tile_.thread_rank()] = elem;
+      }
+      this_length -= count;
+      if (this_length == 0) { break; }
+      key_buffer += count;
+      auto next_index = tile_.shfl(elem, next_lane_);
+      auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
+      elem = cuda_memory<elem_type, order>::load(next_ptr + tile_.thread_rank());
+    }
+  }
+
   template <cuda_memory_order order, typename reclaimer_type>
   DEVICE_QUALIFIER size_type trim(uint32_t offset, size_type old_suffix_index, reclaimer_type& reclaimer) {
     // trim first offset elements and return new_suffix_index
@@ -264,7 +284,13 @@ struct masstree_suffix_node {
   template <cuda_memory_order order>
   static DEVICE_QUALIFIER elem_type fetch_value_only(size_type suffix_index, allocator_type& allocator) {
     auto* ptr = reinterpret_cast<elem_type*>(allocator.address(suffix_index));
-    cuda_memory<elem_type, order>::load(ptr + head_node_value_lane_);
+    return cuda_memory<elem_type, order>::load(ptr + head_node_value_lane_);
+  }
+
+  template <cuda_memory_order order>
+  static DEVICE_QUALIFIER elem_type fetch_length_only(size_type suffix_index, allocator_type& allocator) {
+    auto* ptr = reinterpret_cast<elem_type*>(allocator.address(suffix_index));
+    return cuda_memory<elem_type, order>::load(ptr + head_node_length_lane_);
   }
 
   DEVICE_QUALIFIER masstree_suffix_node<tile_type, allocator_type>& operator=(

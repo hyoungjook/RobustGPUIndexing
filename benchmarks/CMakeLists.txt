@@ -3,7 +3,7 @@ project(benchmarks)
 set(BENCHMARKS
     masstree_insert_find_bench
     masstree_erase_bench
-    masstree_range_bench
+    masstree_scan_bench
 )
 
 foreach(BENCHMARK ${BENCHMARKS})
