@@ -21,12 +21,12 @@
 #include <utils.hpp>
 
 template <typename tile_type, typename allocator_type>
-struct masstree_suffix_node {
+struct suffix_node {
   using elem_type = uint32_t;
   using size_type = uint32_t;
   static constexpr int node_width = 32;
 
-  DEVICE_QUALIFIER masstree_suffix_node(elem_type* ptr, const size_type index, const tile_type& tile, allocator_type& allocator)
+  DEVICE_QUALIFIER suffix_node(elem_type* ptr, const size_type index, const tile_type& tile, allocator_type& allocator)
       : node_ptr_(ptr)
       , node_index_(index)
       , tile_(tile)
@@ -199,7 +199,7 @@ struct masstree_suffix_node {
   }
 
   template <cuda_memory_order order, typename reclaimer_type>
-  DEVICE_QUALIFIER void move_from(masstree_suffix_node<tile_type, allocator_type>& src,
+  DEVICE_QUALIFIER void move_from(suffix_node<tile_type, allocator_type>& src,
                                   uint32_t offset,
                                   reclaimer_type& reclaimer) {
     // move elements from src[offset:] and retire all nodes in src
@@ -291,8 +291,8 @@ struct masstree_suffix_node {
     return cuda_memory<elem_type, order>::load(ptr + head_node_length_lane_);
   }
 
-  DEVICE_QUALIFIER masstree_suffix_node<tile_type, allocator_type>& operator=(
-      const masstree_suffix_node<tile_type, allocator_type>& other) {
+  DEVICE_QUALIFIER suffix_node<tile_type, allocator_type>& operator=(
+      const suffix_node<tile_type, allocator_type>& other) {
     node_ptr_ = other.node_ptr_;
     node_index_ = other.node_index_;
     lane_elem_ = other.lane_elem_;

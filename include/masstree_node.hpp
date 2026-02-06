@@ -20,7 +20,7 @@
 #include <macros.hpp>
 #include <memory_utils.hpp>
 #include <utils.hpp>
-#include <masstree_suffix.hpp>
+#include <suffix.hpp>
 
 template <typename tile_type>
 struct masstree_node {
@@ -299,7 +299,7 @@ struct masstree_node {
                                  const size_type& layer,
                                  const size_type& out_key_max_length,
                                  allocator_type& allocator) const {
-    using suffix_type = masstree_suffix_node<tile_type, allocator_type>;
+    using suffix_type = suffix_node<tile_type, allocator_type>;
     // return values in range, until we meet the link entry
     // the location of first in-range link entry is stored in link_entry_location
     // if there's no link entry in range, link_entry_location = -1
@@ -864,7 +864,7 @@ struct masstree_node {
       uint32_t keystate = tile_.shfl(keystate_, get_key_lane_from_location(i));
       if (keystate == KEYSTATE_SUFFIX) {
         elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
-        auto suffix = masstree_suffix_node<tile_type, allocator_type>(
+        auto suffix = suffix_node<tile_type, allocator_type>(
             reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
         suffix.template load_head<cuda_memory_order::weak>();
         suffix.print();

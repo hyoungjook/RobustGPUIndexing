@@ -28,7 +28,7 @@
 #include <ios>
 #include <iostream>
 #include <masstree_node.hpp>
-#include <masstree_suffix.hpp>
+#include <suffix.hpp>
 #include <queue>
 #include <sstream>
 #include <type_traits>
@@ -275,7 +275,7 @@ struct gpu_masstree {
                                                const tile_type& tile,
                                                device_allocator_context_type& allocator) {
     using node_type = masstree_node<tile_type>;
-    using suffix_type = masstree_suffix_node<tile_type, device_allocator_context_type>;
+    using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     static constexpr auto memory_order = concurrent ? cuda_memory_order::relaxed : cuda_memory_order::weak;
     dummy_early_exit_check<node_type> dummy_early_exit;
     size_type current_node_index = *d_root_index_;
@@ -456,7 +456,7 @@ struct gpu_masstree {
                                            device_reclaimer_context_type& reclaimer,
                                            bool update_if_exists = false) {
     using node_type = masstree_node<tile_type>;
-    using suffix_type = masstree_suffix_node<tile_type, device_allocator_context_type>;
+    using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     struct split_early_exit_check {
       DEVICE_QUALIFIER bool check(const node_type& border_node) {
         // if the border node already has the key slice and it's not the last slice,
@@ -646,7 +646,7 @@ struct gpu_masstree {
     static_assert(concurrent || (!do_merge && !do_remove_empty_root));
     static_assert(do_merge || !do_remove_empty_root);
     using node_type = masstree_node<tile_type>;
-    using suffix_type = masstree_suffix_node<tile_type, device_allocator_context_type>;
+    using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     using dynamic_stack_type = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
     static constexpr auto memory_order = concurrent ? cuda_memory_order::relaxed : cuda_memory_order::weak;
     struct merge_early_exit_check {
@@ -1345,7 +1345,7 @@ struct gpu_masstree {
           }
           if (keystate == node_type::KEYSTATE_SUFFIX) {
             auto suffix_index = node.get_value_from_location(i);
-            auto suffix = masstree_suffix_node<tile_type, device_allocator_context_type>(
+            auto suffix = suffix_node<tile_type, device_allocator_context_type>(
                 reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
             suffix.template load_head<cuda_memory_order::weak>();
             num_suffix_nodes_ += suffix.get_num_nodes();
