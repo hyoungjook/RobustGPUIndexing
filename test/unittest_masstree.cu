@@ -97,15 +97,18 @@ struct testing_input {
     uint32_t key_length_modulo = max_key_length - min_key_length + 1;
     for (std::size_t i = 0; i < num_keys; i++) {
       uint32_t key_length = min_key_length + (i % key_length_modulo);
+      value_type value = 0;
       for (uint32_t s = 0; s < key_length; s++) {
         uint32_t common_prefix_factor = 1u << (key_length - 1 - s);
         uint32_t effective_i = i / common_prefix_factor;
-        keys[i * max_key_length + s] = static_cast<key_slice_type>(effective_i + 1) * 2 + s;
-        keys_not_exist[i * max_key_length + s] = static_cast<key_slice_type>(effective_i + 1) * 2 + 1 + s;
+        key_slice_type key_slice = static_cast<key_slice_type>(effective_i + 1) * 2 + s;
+        keys[i * max_key_length + s] = key_slice;
+        keys_not_exist[i * max_key_length + s] = key_slice + 1;
+        value += key_slice;
       }
       lengths[i] = key_length;
-      values[i] = static_cast<value_type>(keys[(i + 1) * key_length - 1] + 1);
-      values2[i] = values[i] + 7;
+      values[i] = value;
+      values2[i] = value + 7;
     }
     if (duplicate) {
       for (std::size_t i = (num_keys + 1) / 2; i < num_keys; i++) {
