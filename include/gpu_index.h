@@ -20,4 +20,4 @@ template <class T>
 struct device_reclaimer_context {};
 #include <macros.hpp>
 
-#include "gpu_masstree_impl.hpp"
+#include "gpu_masstree.hpp"

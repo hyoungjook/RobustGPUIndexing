@@ -15,7 +15,7 @@
  *   limitations under the License.
  */
 #include <cuda_profiler_api.h>
-#include <gpu_masstree.h>
+#include <gpu_index.h>
 #include <stdlib.h>
 #include <thrust/sequence.h>
 #include <thrust/logical.h>
