@@ -26,7 +26,7 @@
 #include <fstream>
 #include <ios>
 #include <iostream>
-#include <chainht_bucket.hpp>
+#include <chainhashtable_node.hpp>
 #include <suffix.hpp>
 #include <queue>
 #include <sstream>
@@ -38,11 +38,11 @@
 #include <simple_dummy_reclaim.hpp>
 #include <simple_debra_reclaim.hpp>
 
-namespace GpuChainHT {
+namespace GpuChainHashtable {
 
 template <typename Allocator,
           typename Reclaimer>
-struct gpu_chainht {
+struct gpu_chainhashtable {
   using size_type = uint32_t;
   using elem_type = uint32_t;
   using key_slice_type = elem_type;
@@ -51,7 +51,7 @@ struct gpu_chainht {
   static auto constexpr bucket_size = 32;
   static std::size_t constexpr bucket_bytes = sizeof(elem_type) * bucket_size;
   static auto constexpr cg_tile_size = 32;
-  using hashtable_type = gpu_chainht<Allocator, Reclaimer>;
+  using hashtable_type = gpu_chainhashtable<Allocator, Reclaimer>;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
@@ -63,8 +63,8 @@ struct gpu_chainht {
   using device_reclaimer_instance_type = typename host_reclaimer_type::device_instance_type;
   using device_reclaimer_context_type = device_reclaimer_context<host_reclaimer_type>;
 
-  gpu_chainht() = delete;
-  gpu_chainht(const host_allocator_type& host_allocator,
+  gpu_chainhashtable() = delete;
+  gpu_chainhashtable(const host_allocator_type& host_allocator,
            const host_reclaimer_type& host_reclaimer,
            size_type num_buckets)
       : allocator_(host_allocator.get_device_instance())
@@ -73,15 +73,15 @@ struct gpu_chainht {
     allocate();
   }
 
-  gpu_chainht& operator=(const gpu_chainht& other) = delete;
-  gpu_chainht(const gpu_chainht& other)
+  gpu_chainhashtable& operator=(const gpu_chainhashtable& other) = delete;
+  gpu_chainhashtable(const gpu_chainhashtable& other)
       : d_table_(other.d_table_)
       , is_owner_(false)
       , num_buckets_(other.num_buckets_)
       , allocator_(other.allocator_)
       , reclaimer_(other.reclaimer_) {}
 
-  ~gpu_chainht() {
+  ~gpu_chainhashtable() {
     deallocate();
   }
 
@@ -94,8 +94,8 @@ struct gpu_chainht {
             const size_type num_keys,
             cudaStream_t stream = 0,
             bool concurrent = false) {
-    using find_concurrent = kernel::GpuChainHT::find_device_func<true, key_slice_type, size_type, value_type>;
-    using find_readonly = kernel::GpuChainHT::find_device_func<false, key_slice_type, size_type, value_type>;
+    using find_concurrent = kernel::GpuChainHashtable::find_device_func<true, key_slice_type, size_type, value_type>;
+    using find_readonly = kernel::GpuChainHashtable::find_device_func<false, key_slice_type, size_type, value_type>;
     #define find_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values
     if (concurrent) {
       find_concurrent func{find_args};
@@ -115,7 +115,7 @@ struct gpu_chainht {
               const size_type num_keys,
               cudaStream_t stream = 0,
               bool update_if_exists = false) {
-    using insert_func = kernel::GpuChainHT::insert_device_func<key_slice_type, size_type, value_type>;
+    using insert_func = kernel::GpuChainHashtable::insert_device_func<key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists
     insert_func func{insert_args};
     launch_batch_kernel(func, num_keys, stream);
@@ -128,8 +128,8 @@ struct gpu_chainht {
              const size_type num_keys,
              cudaStream_t stream = 0,
              bool do_merge = true) {
-    using erase_readonly = kernel::GpuChainHT::erase_device_func<false, key_slice_type, size_type, value_type>;
-    using erase_merge = kernel::GpuChainHT::erase_device_func<true, key_slice_type, size_type, value_type>;
+    using erase_readonly = kernel::GpuChainHashtable::erase_device_func<false, key_slice_type, size_type, value_type>;
+    using erase_merge = kernel::GpuChainHashtable::erase_device_func<true, key_slice_type, size_type, value_type>;
     #define erase_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths
     if (do_merge) {
       erase_merge func{erase_args};
@@ -153,9 +153,9 @@ struct gpu_chainht {
                                     cudaStream_t stream = 0,
                                     bool insert_update_if_exists = false,
                                     bool erase_do_merge = true) {
-    using insert_func = kernel::GpuChainHT::insert_device_func<key_slice_type, size_type, value_type>;
-    using erase_readonly = kernel::GpuChainHT::erase_device_func<false, key_slice_type, size_type, value_type>;
-    using erase_merge = kernel::GpuChainHT::erase_device_func<true, key_slice_type, size_type, value_type>;
+    using insert_func = kernel::GpuChainHashtable::insert_device_func<key_slice_type, size_type, value_type>;
+    using erase_readonly = kernel::GpuChainHashtable::erase_device_func<false, key_slice_type, size_type, value_type>;
+    using erase_merge = kernel::GpuChainHashtable::erase_device_func<true, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
     #define erase_args .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths
     insert_func ins_func{insert_args};
@@ -177,7 +177,7 @@ struct gpu_chainht {
                                                size_type key_length,
                                                const tile_type& tile,
                                                device_allocator_context_type& allocator) {
-    using bucket_type = chainht_bucket<tile_type>;
+    using node_type = chainhashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     auto hash = compute_hash(key, key_length, tile) % num_buckets_;
     elem_type* bucket_ptr = d_table_ + (bucket_size * hash);
@@ -185,14 +185,14 @@ struct gpu_chainht {
     const bool more_key = (key_length > 1);
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
-    auto target_bucket = coop_traverse_until_found<concurrent>(
+    auto target_node = coop_traverse_until_found<concurrent>(
         first_slice, more_key, key, key_length, bucket_ptr, location_if_found, suffix_if_found, tile, allocator);
     if (location_if_found >= 0) { // found
       if (more_key) {
         return suffix_if_found.get_value();
       }
       else {
-        return target_bucket.get_value_from_location(location_if_found);
+        return target_node.get_value_from_location(location_if_found);
       }
     }
     // not found
@@ -206,16 +206,16 @@ struct gpu_chainht {
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,
                                            bool update_if_exists = false) {
-    using bucket_type = chainht_bucket<tile_type>;
+    using node_type = chainhashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     auto hash = compute_hash(key, key_length, tile) % num_buckets_;
     elem_type* bucket_ptr = d_table_ + (bucket_size * hash);
-    bucket_type::lock(bucket_ptr, tile);
+    node_type::lock(bucket_ptr, tile);
     const key_slice_type first_slice = key[0];
     const bool more_key = (key_length > 1);
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
-    auto target_bucket = coop_traverse_until_found<true>(
+    auto target_node = coop_traverse_until_found<true>(
         first_slice, more_key, key, key_length, bucket_ptr, location_if_found, suffix_if_found, tile, allocator);
     if (location_if_found >= 0) { // already exists
       if (update_if_exists) {
@@ -224,11 +224,11 @@ struct gpu_chainht {
           suffix_if_found.template store_head<cuda_memory_order::relaxed>();
         }
         else {
-          target_bucket.update(location_if_found, value);
-          target_bucket.template store<cuda_memory_order::relaxed>();
+          target_node.update(location_if_found, value);
+          target_node.template store<cuda_memory_order::relaxed>();
         }
       }
-      bucket_type::unlock(bucket_ptr, tile);
+      node_type::unlock(bucket_ptr, tile);
       return update_if_exists;
     }
     // not exists
@@ -241,21 +241,21 @@ struct gpu_chainht {
       suffix.template store_head<cuda_memory_order::relaxed>();
       __threadfence();
     }
-    if (target_bucket.is_full()) {
+    if (target_node.is_full()) {
       auto next_index = allocator.allocate(tile);
-      auto new_bucket = bucket_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-      new_bucket.initialize_empty(false);
-      new_bucket.insert(first_slice, to_insert, more_key);
-      new_bucket.template store<cuda_memory_order::relaxed>();
+      auto new_node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
+      new_node.initialize_empty(false);
+      new_node.insert(first_slice, to_insert, more_key);
+      new_node.template store<cuda_memory_order::relaxed>();
       __threadfence();
-      target_bucket.set_next_index(next_index);
-      target_bucket.set_has_next();
+      target_node.set_next_index(next_index);
+      target_node.set_has_next();
     }
-    else { // !bucket.is_full()
-      target_bucket.insert(first_slice, to_insert, more_key);
+    else { // !node.is_full()
+      target_node.insert(first_slice, to_insert, more_key);
     }
-    target_bucket.template store<cuda_memory_order::relaxed>();
-    bucket_type::unlock(bucket_ptr, tile);
+    target_node.template store<cuda_memory_order::relaxed>();
+    node_type::unlock(bucket_ptr, tile);
     return true;
   }
 
@@ -265,62 +265,62 @@ struct gpu_chainht {
                                           const tile_type& tile,
                                           device_allocator_context_type& allocator,
                                           device_reclaimer_context_type& reclaimer) {
-    using bucket_type = chainht_bucket<tile_type>;
+    using node_type = chainhashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     auto hash = compute_hash(key, key_length, tile) % num_buckets_;
     elem_type* bucket_ptr = d_table_ + (bucket_size * hash);
-    bucket_type::lock(bucket_ptr, tile);
+    node_type::lock(bucket_ptr, tile);
     const key_slice_type first_slice = key[0];
     const bool more_key = (key_length > 1);
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
-    bucket_type target_bucket(tile);
+    node_type target_node(tile);
     if constexpr (do_merge) {
-      target_bucket = coop_traverse_until_found_merge(
+      target_node = coop_traverse_until_found_merge(
         first_slice, more_key, key, key_length, bucket_ptr, location_if_found, suffix_if_found, tile, allocator, reclaimer);
     }
     else {
-      target_bucket = coop_traverse_until_found<true>(
+      target_node = coop_traverse_until_found<true>(
         first_slice, more_key, key, key_length, bucket_ptr, location_if_found, suffix_if_found, tile, allocator);
     }
     if (location_if_found >= 0) { // exists
-      target_bucket.erase(location_if_found);
-      target_bucket.template store<cuda_memory_order::relaxed>();
+      target_node.erase(location_if_found);
+      target_node.template store<cuda_memory_order::relaxed>();
       if (more_key) {
         suffix_if_found.template retire<cuda_memory_order::relaxed>(reclaimer);
       }
-      bucket_type::unlock(bucket_ptr, tile);
+      node_type::unlock(bucket_ptr, tile);
       return true;
     }
     // not exists
-    bucket_type::unlock(bucket_ptr, tile);
+    node_type::unlock(bucket_ptr, tile);
     return false;
   }
 
  private:
   // device-side helper functions
   template <bool concurrent, typename tile_type>
-  DEVICE_QUALIFIER chainht_bucket<tile_type> coop_traverse_until_found(const key_slice_type& first_slice,
-                                                                       bool more_key,
-                                                                       const key_slice_type* key,
-                                                                       const size_type& key_length,
-                                                                       elem_type* bucket_ptr,
-                                                                       int& location_if_found,
-                                                                       suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
-                                                                       const tile_type& tile,
-                                                                       device_allocator_context_type& allocator) {
-    using bucket_type = chainht_bucket<tile_type>;
+  DEVICE_QUALIFIER chainhashtable_node<tile_type> coop_traverse_until_found(const key_slice_type& first_slice,
+                                                                            bool more_key,
+                                                                            const key_slice_type* key,
+                                                                            const size_type& key_length,
+                                                                            elem_type* bucket_ptr,
+                                                                            int& location_if_found,
+                                                                            suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
+                                                                            const tile_type& tile,
+                                                                            device_allocator_context_type& allocator) {
+    using node_type = chainhashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     static constexpr auto memory_order = concurrent ? cuda_memory_order::relaxed : cuda_memory_order::weak;
-    auto bucket = bucket_type(bucket_ptr, tile);
+    auto node = node_type(bucket_ptr, tile);
     while (true) {
-      bucket.template load<memory_order>();
-      uint32_t to_check = bucket.match_key_in_node(first_slice, more_key);
+      node.template load<memory_order>();
+      uint32_t to_check = node.match_key_in_node(first_slice, more_key);
       if (more_key) {
         // if length > 1, compare suffixes
         while (to_check != 0) {
           auto cur_location = __ffs(to_check) - 1;
-          auto suffix_index = bucket.get_value_from_location(cur_location);
+          auto suffix_index = node.get_value_from_location(cur_location);
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
           suffix.template load_head<memory_order>();
@@ -328,7 +328,7 @@ struct gpu_chainht {
             // found
             location_if_found = cur_location;
             suffix_if_found = suffix;
-            return bucket;
+            return node;
           }
           to_check &= ~(1u << cur_location);
         }
@@ -338,42 +338,42 @@ struct gpu_chainht {
         if (to_check != 0) {
           // found
           location_if_found = __ffs(to_check) - 1;
-          return bucket;
+          return node;
         }
       }
-      // done searching this bucket, move on to next
-      if (!bucket.has_next()) { break; }
-      auto next_index = bucket.get_next_index();
-      bucket = bucket_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
+      // done searching this node, move on to next
+      if (!node.has_next()) { break; }
+      auto next_index = node.get_next_index();
+      node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
     }
     // not found until the end
     location_if_found = -1;
-    return bucket;
+    return node;
   }
 
   template <typename tile_type>
-  DEVICE_QUALIFIER chainht_bucket<tile_type> coop_traverse_until_found_merge(const key_slice_type& first_slice,
-                                                                             bool more_key,
-                                                                             const key_slice_type* key,
-                                                                             const size_type& key_length,
-                                                                             elem_type* bucket_ptr,
-                                                                             int& location_if_found,
-                                                                             suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
-                                                                             const tile_type& tile,
-                                                                             device_allocator_context_type& allocator,
-                                                                             device_reclaimer_context_type& reclaimer) {
-    using bucket_type = chainht_bucket<tile_type>;
+  DEVICE_QUALIFIER chainhashtable_node<tile_type> coop_traverse_until_found_merge(const key_slice_type& first_slice,
+                                                                                  bool more_key,
+                                                                                  const key_slice_type* key,
+                                                                                  const size_type& key_length,
+                                                                                  elem_type* bucket_ptr,
+                                                                                  int& location_if_found,
+                                                                                  suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
+                                                                                  const tile_type& tile,
+                                                                                  device_allocator_context_type& allocator,
+                                                                                  device_reclaimer_context_type& reclaimer) {
+    using node_type = chainhashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    auto bucket = bucket_type(bucket_ptr, tile);
-    bucket.template load<cuda_memory_order::relaxed>();
-    bool current_bucket_store_deferred = false;
+    auto node = node_type(bucket_ptr, tile);
+    node.template load<cuda_memory_order::relaxed>();
+    bool current_node_store_deferred = false;
     while (true) {
-      uint32_t to_check = bucket.match_key_in_node(first_slice, more_key);
+      uint32_t to_check = node.match_key_in_node(first_slice, more_key);
       if (more_key) {
         // if length > 1, compare suffixes
         while (to_check != 0) {
           auto cur_location = __ffs(to_check) - 1;
-          auto suffix_index = bucket.get_value_from_location(cur_location);
+          auto suffix_index = node.get_value_from_location(cur_location);
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
           suffix.template load_head<cuda_memory_order::relaxed>();
@@ -381,8 +381,8 @@ struct gpu_chainht {
             // found
             location_if_found = cur_location;
             suffix_if_found = suffix;
-            // current_bucket_store_deferred: USER SHOULD STORE the bucket returned
-            return bucket;
+            // current_node_store_deferred: USER SHOULD STORE the node returned
+            return node;
           }
           to_check &= ~(1u << cur_location);
         }
@@ -392,32 +392,32 @@ struct gpu_chainht {
         if (to_check != 0) {
           // found
           location_if_found = __ffs(to_check) - 1;
-          // current_bucket_store_deferred: USER SHOULD STORE the bucket returned
-          return bucket;
+          // current_node_store_deferred: USER SHOULD STORE the node returned
+          return node;
         }
       }
-      if (current_bucket_store_deferred) {
-        bucket.template store<cuda_memory_order::relaxed>();
-        current_bucket_store_deferred = false;
+      if (current_node_store_deferred) {
+        node.template store<cuda_memory_order::relaxed>();
+        current_node_store_deferred = false;
       }
-      // done searching this bucket, move on to next
-      if (!bucket.has_next()) { break; }
-      auto next_index = bucket.get_next_index();
-      auto next_bucket = bucket_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-      next_bucket.template load<cuda_memory_order::relaxed>();
-      if (bucket.is_mergeable(next_bucket)) {
-        bucket.merge(next_bucket);
-        current_bucket_store_deferred = true;
+      // done searching this node, move on to next
+      if (!node.has_next()) { break; }
+      auto next_index = node.get_next_index();
+      auto next_node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
+      next_node.template load<cuda_memory_order::relaxed>();
+      if (node.is_mergeable(next_node)) {
+        node.merge(next_node);
+        current_node_store_deferred = true;
         __threadfence();
         reclaimer.retire(next_index, tile);
       }
       else {
-        bucket = next_bucket;
+        node = next_node;
       }
     }
     // not found until the end
     location_if_found = -1;
-    return bucket;
+    return node;
   }
 
   __host__ __device__ static constexpr uint32_t _constexpr_pow(uint32_t base, uint32_t exp) {
@@ -465,44 +465,44 @@ struct gpu_chainht {
  public:
   // device-side debug functions
   template <typename tile_type, typename Func>
-  DEVICE_QUALIFIER void cooperative_traverse_buckets(Func& task, const tile_type& tile) {
+  DEVICE_QUALIFIER void cooperative_traverse_nodes(Func& task, const tile_type& tile) {
     // debug-purpose, so inefficient implementation
     // called with single warp
-    using bucket_type = chainht_bucket<tile_type>;
+    using node_type = chainhashtable_node<tile_type>;
     device_allocator_context_type allocator{allocator_, tile};
     for (size_type bucket_index = 0; bucket_index < num_buckets_; bucket_index++) {
-      auto bucket = bucket_type(d_table_ + (bucket_size * bucket_index), tile);
-      bucket.template load<cuda_memory_order::weak>();
-      task.exec(bucket, bucket_index, tile, allocator);
-      while (bucket.has_next()) {
-        auto next_index = bucket.get_next_index();
-        bucket = bucket_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-        bucket.template load<cuda_memory_order::weak>();
-        task.exec(bucket, -1, tile, allocator);
+      auto node = node_type(d_table_ + (bucket_size * bucket_index), tile);
+      node.template load<cuda_memory_order::weak>();
+      task.exec(node, bucket_index, tile, allocator);
+      while (node.has_next()) {
+        auto next_index = node.get_next_index();
+        node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
+        node.template load<cuda_memory_order::weak>();
+        task.exec(node, -1, tile, allocator);
       }
     }
   }
 
   template <typename func>
-  void traverse_buckets() {
-    kernel::GpuChainHT::traverse_buckets_kernel<func><<<1, 32>>>(*this);
+  void traverse_nodes() {
+    kernel::GpuChainHashtable::traverse_nodes_kernel<func><<<1, 32>>>(*this);
     cudaDeviceSynchronize();
   }
 
-  struct print_bucket_task {
+  struct print_nodes_task {
     DEVICE_QUALIFIER void init(bool lead_lane) {}
-    template <typename bucket_type, typename tile_type>
-    DEVICE_QUALIFIER void exec(const bucket_type& bucket, int head_index, const tile_type& tile, device_allocator_context_type& allocator) {
+    template <typename node_type, typename tile_type>
+    DEVICE_QUALIFIER void exec(const node_type& node, int head_index, const tile_type& tile, device_allocator_context_type& allocator) {
       if (head_index >= 0 && tile.thread_rank() == 0) printf("HEAD[%d] ", head_index);
-      bucket.print(allocator);
+      node.print(allocator);
     }
     DEVICE_QUALIFIER void fini() {}
   };
   void print() {
-    traverse_buckets<print_bucket_task>();
+    traverse_nodes<print_nodes_task>();
   }
 
-  struct validate_bucket_task {
+  struct validate_nodes_task {
     DEVICE_QUALIFIER void init(bool lead_lane) {
       lead_lane_ = lead_lane;
       num_head_nodes_ = 0;
@@ -514,8 +514,8 @@ struct gpu_chainht {
       this_bucket_num_nodes_ = 0;
       max_nodes_per_bucket_ = 0;
     }
-    template <typename bucket_type, typename tile_type>
-    DEVICE_QUALIFIER void exec(const bucket_type& bucket, int head_index, const tile_type& tile, device_allocator_context_type& allocator) {
+    template <typename node_type, typename tile_type>
+    DEVICE_QUALIFIER void exec(const node_type& node, int head_index, const tile_type& tile, device_allocator_context_type& allocator) {
       if (head_index >= 0) {
         // wrap up previous num_entry count and update stats
         max_entries_per_bucket_ = max(max_entries_per_bucket_, this_bucket_num_entries_);
@@ -523,11 +523,11 @@ struct gpu_chainht {
         this_bucket_num_entries_ = 0;
         this_bucket_num_nodes_ = 0;
       }
-      uint16_t num_keys = bucket.num_keys();
+      uint16_t num_keys = node.num_keys();
       for (uint16_t i = 0; i < num_keys; i++) {
-        bool suffix_bit = bucket.get_suffix_of_location(i);
+        bool suffix_bit = node.get_suffix_of_location(i);
         if (suffix_bit) {
-          auto suffix_index = bucket.get_value_from_location(i);
+          auto suffix_index = node.get_value_from_location(i);
           auto suffix = suffix_node<tile_type, device_allocator_context_type>(
               reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
           suffix.template load_head<cuda_memory_order::weak>();
@@ -556,17 +556,17 @@ struct gpu_chainht {
     uint64_t this_bucket_num_nodes_, max_nodes_per_bucket_;
   };
   void validate() {
-    traverse_buckets<validate_bucket_task>();
+    traverse_nodes<validate_nodes_task>();
   }
 
  private:
   template <typename tile_type>
   DEVICE_QUALIFIER void initialize_bucket(size_type bucket_index,
                                           const tile_type& tile) {
-    using bucket_type = chainht_bucket<tile_type>;
-    auto bucket = bucket_type(d_table_ + (bucket_index * bucket_size), tile);
-    bucket.initialize_empty(true);
-    bucket.template store<cuda_memory_order::weak>();
+    using node_type = chainhashtable_node<tile_type>;
+    auto node = node_type(d_table_ + (bucket_index * bucket_size), tile);
+    node.initialize_empty(true);
+    node.template store<cuda_memory_order::weak>();
   }
 
   void allocate() {
@@ -584,7 +584,7 @@ struct gpu_chainht {
   void initialize() {
     const uint32_t num_blocks = num_buckets_;
     const uint32_t block_size = cg_tile_size;
-    kernel::GpuChainHT::initialize_kernel<<<num_blocks, block_size>>>(*this);
+    kernel::GpuChainHashtable::initialize_kernel<<<num_blocks, block_size>>>(*this);
     cuda_try(cudaDeviceSynchronize());
   }
 
@@ -632,8 +632,8 @@ struct gpu_chainht {
   device_allocator_instance_type allocator_;
   device_reclaimer_instance_type reclaimer_;
 
-  template <typename chainht>
-  friend __global__ void kernel::GpuChainHT::initialize_kernel(chainht);
+  template <typename chainhashtable>
+  friend __global__ void kernel::GpuChainHashtable::initialize_kernel(chainhashtable);
 
   template <bool do_reclaim, typename device_func, typename index_type>
   friend __global__ void kernel::batch_kernel(index_type index,
@@ -649,4 +649,4 @@ struct gpu_chainht {
 
 };
 
-} // namespace GpuChainHT
+} // namespace GpuChainHashtable

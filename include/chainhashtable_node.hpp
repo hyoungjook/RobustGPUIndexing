@@ -23,15 +23,15 @@
 #include <suffix.hpp>
 
 template <typename tile_type>
-struct chainht_bucket {
+struct chainhashtable_node {
   using elem_type = uint32_t;
   using key_type = elem_type;
   using value_type = elem_type;
   using size_type = uint32_t;
   static constexpr int node_width = 16;
-  DEVICE_QUALIFIER chainht_bucket(const tile_type& tile): tile_(tile) {}
-  DEVICE_QUALIFIER chainht_bucket(elem_type* ptr, const tile_type& tile)
-      : bucket_ptr_(ptr), tile_(tile)
+  DEVICE_QUALIFIER chainhashtable_node(const tile_type& tile): tile_(tile) {}
+  DEVICE_QUALIFIER chainhashtable_node(elem_type* ptr, const tile_type& tile)
+      : node_ptr_(ptr), tile_(tile)
   {
     assert(tile_.size() == 2 * node_width);
   }
@@ -49,12 +49,12 @@ struct chainht_bucket {
 
   template <cuda_memory_order order>
   DEVICE_QUALIFIER void load() {
-    lane_elem_ = cuda_memory<elem_type, order>::load(bucket_ptr_ + tile_.thread_rank());
+    lane_elem_ = cuda_memory<elem_type, order>::load(node_ptr_ + tile_.thread_rank());
     read_metadata_from_registers();
   }
   template <cuda_memory_order order>
   DEVICE_QUALIFIER void store() {
-    cuda_memory<elem_type, order>::store(bucket_ptr_ + tile_.thread_rank(), lane_elem_);
+    cuda_memory<elem_type, order>::store(node_ptr_ + tile_.thread_rank(), lane_elem_);
   }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {
@@ -99,8 +99,8 @@ struct chainht_bucket {
   DEVICE_QUALIFIER bool is_full() const {
     return (num_keys() == max_num_keys_);
   }
-  DEVICE_QUALIFIER bool is_mergeable(const chainht_bucket& next_bucket) const {
-    return (num_keys() + next_bucket.num_keys()) <= max_num_keys_;
+  DEVICE_QUALIFIER bool is_mergeable(const chainhashtable_node& next_node) const {
+    return (num_keys() + next_node.num_keys()) <= max_num_keys_;
   }
   DEVICE_QUALIFIER bool get_suffix_of_location(int location) const {
     return (metadata_ >> (suffix_bits_offset_ + location)) & 1u;
@@ -185,7 +185,7 @@ struct chainht_bucket {
     }
   }
 
-  DEVICE_QUALIFIER void merge(const chainht_bucket<tile_type>& next_node) {
+  DEVICE_QUALIFIER void merge(const chainhashtable_node<tile_type>& next_node) {
     assert(is_mergeable(next_node));
     // copy elements from next node
     bool suffix_bit = get_suffix_of_location(tile_.thread_rank());
@@ -232,9 +232,8 @@ struct chainht_bucket {
     write_metadata_to_registers();
   }
 
-  DEVICE_QUALIFIER chainht_bucket<tile_type>& operator=(
-      const chainht_bucket<tile_type>& other) {
-    bucket_ptr_ = other.bucket_ptr_;
+  DEVICE_QUALIFIER chainhashtable_node<tile_type>& operator=(const chainhashtable_node<tile_type>& other) {
+    node_ptr_ = other.node_ptr_;
     lane_elem_ = other.lane_elem_;
     metadata_ = other.metadata_;
     return *this;
@@ -243,7 +242,7 @@ struct chainht_bucket {
   template <typename allocator_type>
   DEVICE_QUALIFIER void print(allocator_type& allocator) const {
     bool lead_lane = (tile_.thread_rank() == 0);
-    if (lead_lane) printf("bucket[%p]: {", bucket_ptr_);
+    if (lead_lane) printf("node[%p]: {", node_ptr_);
     if (num_keys() > max_num_keys_) {
       if (lead_lane) printf("num_keys too large: skip}\n");
       return;
@@ -280,7 +279,7 @@ struct chainht_bucket {
   }
 
  private:
-  elem_type* bucket_ptr_;
+  elem_type* node_ptr_;
   elem_type lane_elem_;
   const tile_type tile_;
 

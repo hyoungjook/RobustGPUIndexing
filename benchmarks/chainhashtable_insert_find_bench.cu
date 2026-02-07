@@ -40,19 +40,19 @@ struct bench_rates {
   float insertion_rate;
   float find_rate;
 };
-template <typename chainht_type>
-bench_rates bench_chainht_insertion_find(thrust::device_vector<key_slice_type>& d_keys,
-                                         thrust::device_vector<size_type>& d_lengths,
-                                         thrust::device_vector<value_type>& d_values,
-                                         thrust::device_vector<key_slice_type>& d_query_keys,
-                                         thrust::device_vector<size_type>& d_query_lengths,
-                                         thrust::device_vector<value_type>& d_query_results,
-                                         uint32_t num_keys,
-                                         float fill_factor,
-                                         uint32_t max_key_length,
-                                         std::size_t num_experiments,
-                                         bool validate_result = false,
-                                         bool validate_index = false) {
+template <typename chainhashtable_type>
+bench_rates bench_chainhashtable_insertion_find(thrust::device_vector<key_slice_type>& d_keys,
+                                                thrust::device_vector<size_type>& d_lengths,
+                                                thrust::device_vector<value_type>& d_values,
+                                                thrust::device_vector<key_slice_type>& d_query_keys,
+                                                thrust::device_vector<size_type>& d_query_lengths,
+                                                thrust::device_vector<value_type>& d_query_results,
+                                                uint32_t num_keys,
+                                                float fill_factor,
+                                                uint32_t max_key_length,
+                                                std::size_t num_experiments,
+                                                bool validate_result = false,
+                                                bool validate_index = false) {
   cudaStream_t insertion_stream{0};
   cudaStream_t find_stream{0};
   float average_insertion_seconds(0.0f);
@@ -61,9 +61,9 @@ bench_rates bench_chainht_insertion_find(thrust::device_vector<key_slice_type>& 
   std::size_t num_buckets = std::max(static_cast<std::size_t>(static_cast<double>(num_keys) / 15.0f / fill_factor), 1UL);
 
   for (std::size_t exp = 0; exp < num_experiments; exp++) {
-    typename chainht_type::host_allocator_type host_alloc;
-    typename chainht_type::host_reclaimer_type host_reclaim;
-    chainht_type table(host_alloc, host_reclaim, num_buckets);
+    typename chainhashtable_type::host_allocator_type host_alloc;
+    typename chainhashtable_type::host_reclaimer_type host_reclaim;
+    chainhashtable_type table(host_alloc, host_reclaim, num_buckets);
     auto memory_usage = utils::compute_device_memory_usage();
     std::cout << "Using: " << double(memory_usage.used_bytes) / double(1 << 30) << " GiBs"
               << std::endl;
@@ -240,11 +240,11 @@ int main(int argc, char** argv) {
   using simple_slab_alloc_type = simple_slab_allocator<128>;
   using simple_dummy_reclaim_type = simple_dummy_reclaimer;
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
-  using chainht_slab_type = GpuChainHT::gpu_chainht<simple_slab_alloc_type, simple_dummy_reclaim_type>;
-  using chainht_slab_reclaim_type = GpuChainHT::gpu_chainht<simple_slab_alloc_type, simple_debra_reclaim_type>;
+  using chainhashtable_slab_type = GpuChainHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_dummy_reclaim_type>;
+  using chainhashtable_slab_reclaim_type = GpuChainHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type>;
 
-  std::cout << "Benchmarking chainht_slab_reclaim_type" << std::endl;
-  bench_chainht_insertion_find<chainht_slab_reclaim_type>(
+  std::cout << "Benchmarking chainhashtable_slab_reclaim_type" << std::endl;
+  bench_chainhashtable_insertion_find<chainhashtable_slab_reclaim_type>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, fill_factor, max_key_length, num_experiments, validate_result, validate_index
   );

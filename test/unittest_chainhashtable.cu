@@ -149,9 +149,9 @@ using simple_dummy_reclaim_type = simple_dummy_reclaimer;
 using simple_debra_reclaim_type = simple_debra_reclaimer<>;
 
 typedef testing::Types<
-    //MapData<GpuChainHT::gpu_chainht<simple_bump_alloc_type, simple_dummy_reclaim_type>>,
-    //MapData<GpuChainHT::gpu_chainht<simple_slab_alloc_type, simple_dummy_reclaim_type>>,
-    MapData<GpuChainHT::gpu_chainht<simple_slab_alloc_type, simple_debra_reclaim_type>>>
+    //MapData<GpuChainHashtable::gpu_chainhashtable<simple_bump_alloc_type, simple_dummy_reclaim_type>>,
+    //MapData<GpuChainHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_dummy_reclaim_type>>,
+    MapData<GpuChainHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type>>>
     Implementations;
 
 TYPED_TEST_SUITE(MapTest, Implementations);
