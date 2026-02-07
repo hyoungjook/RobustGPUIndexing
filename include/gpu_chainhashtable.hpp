@@ -561,12 +561,12 @@ struct gpu_chainhashtable {
     // 2. compute per-lane value
     uint32_t hash = 0, hash2 = 0;
     while (true) {
-      if (tile.thread_rank() < key_length) {
-        auto slice = key[tile.thread_rank()];
-        hash += exponent1 * slice;
-        hash2 += exponent2 * slice;
-      }
-      if (key_length <= cg_tile_size) { break; }
+      key_slice_type slice = (tile.thread_rank() < key_length) ? 
+          key[tile.thread_rank()] :
+          ((tile.thread_rank() == key_length) ? key_length : 0);
+      hash += exponent1 * slice;
+      hash2 += exponent2 * slice;
+      if (key_length < cg_tile_size) { break; }
       key += cg_tile_size;
       key_length -= cg_tile_size;
       exponent1 *= prime1_multiplier;
@@ -577,8 +577,6 @@ struct gpu_chainhashtable {
       hash += tile.shfl_down(hash, offset);
       hash2 += tile.shfl_up(hash2, offset);
     }
-    hash ^= (key_length * hash_prime1); // embed length
-    hash2 ^= (key_length * hash_prime2);
     if (tile.thread_rank() == cg_tile_size - 1) { hash = hash2; }
     // 4. finalize
     hash ^= hash >> 16; // murmur3 finalizer
