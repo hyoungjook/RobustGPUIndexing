@@ -40,34 +40,36 @@ struct bench_rates {
   float insertion_rate;
   float find_rate;
 };
-template <typename masstree_type, bool enable_suffix>
-bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>& d_keys,
-                                          thrust::device_vector<size_type>& d_lengths,
-                                          thrust::device_vector<value_type>& d_values,
-                                          thrust::device_vector<key_slice_type>& d_query_keys,
-                                          thrust::device_vector<size_type>& d_query_lengths,
-                                          thrust::device_vector<value_type>& d_query_results,
-                                          uint32_t num_keys,
-                                          uint32_t max_key_length,
-                                          std::size_t num_experiments,
-                                          bool validate_result = false,
-                                          bool validate_index = false) {
+template <typename chainht_type>
+bench_rates bench_chainht_insertion_find(thrust::device_vector<key_slice_type>& d_keys,
+                                         thrust::device_vector<size_type>& d_lengths,
+                                         thrust::device_vector<value_type>& d_values,
+                                         thrust::device_vector<key_slice_type>& d_query_keys,
+                                         thrust::device_vector<size_type>& d_query_lengths,
+                                         thrust::device_vector<value_type>& d_query_results,
+                                         uint32_t num_keys,
+                                         float fill_factor,
+                                         uint32_t max_key_length,
+                                         std::size_t num_experiments,
+                                         bool validate_result = false,
+                                         bool validate_index = false) {
   cudaStream_t insertion_stream{0};
   cudaStream_t find_stream{0};
   float average_insertion_seconds(0.0f);
   float average_find_seconds(0.0f);
   std::size_t valid_count = 0;
+  std::size_t num_buckets = std::max(static_cast<std::size_t>(static_cast<double>(num_keys) / 15.0f / fill_factor), 1UL);
 
   for (std::size_t exp = 0; exp < num_experiments; exp++) {
-    typename masstree_type::host_allocator_type host_alloc;
-    typename masstree_type::host_reclaimer_type host_reclaim;
-    masstree_type tree(host_alloc, host_reclaim);
+    typename chainht_type::host_allocator_type host_alloc;
+    typename chainht_type::host_reclaimer_type host_reclaim;
+    chainht_type table(host_alloc, host_reclaim, num_buckets);
     auto memory_usage = utils::compute_device_memory_usage();
     std::cout << "Using: " << double(memory_usage.used_bytes) / double(1 << 30) << " GiBs"
               << std::endl;
     gpu_timer insert_timer(insertion_stream);
     insert_timer.start_timer();
-    tree.insert(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream, false, enable_suffix);
+    table.insert(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream);
     insert_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     auto insertion_elapsed = insert_timer.get_elapsed_s();
@@ -75,7 +77,7 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
 
     gpu_timer find_timer(find_stream);
     find_timer.start_timer();
-    tree.find(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys, find_stream);
+    table.find(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys, find_stream);
     find_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     auto find_elapsed = find_timer.get_elapsed_s();
@@ -96,7 +98,7 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
       }
     }
     if (validate_index) {
-      tree.validate();
+      table.validate();
     }
   }
 
@@ -120,6 +122,7 @@ bench_rates bench_masstree_insertion_find(thrust::device_vector<key_slice_type>&
 int main(int argc, char** argv) {
   auto arguments    = std::vector<std::string>(argv, argv + argc);
   uint32_t num_keys = get_arg_value<uint32_t>(arguments, "num-keys").value_or(1'000'000);
+  float fill_factor = get_arg_value<float>(arguments, "fill-factor").value_or(0.7f);
   int device_id     = get_arg_value<int>(arguments, "device").value_or(0);
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
@@ -229,6 +232,7 @@ int main(int argc, char** argv) {
 
   std::cout << "Benchmarking...\n";
   std::cout << "num_keys = " << num_keys << ", ";
+  std::cout << "fill_factor = " << fill_factor << ", ";
   std::cout << "min_key_length = " << min_key_length << ", ";
   std::cout << "max_key_length = " << max_key_length << ", ";
   std::cout << "common_prefix_ratio = " << common_prefix_ratio << std::endl;
@@ -236,18 +240,13 @@ int main(int argc, char** argv) {
   using simple_slab_alloc_type = simple_slab_allocator<128>;
   using simple_dummy_reclaim_type = simple_dummy_reclaimer;
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
-  using masstree_slab_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_dummy_reclaim_type>;
-  using masstree_slab_reclaim_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type>;
+  using chainht_slab_type = GpuChainHT::gpu_chainht<simple_slab_alloc_type, simple_dummy_reclaim_type>;
+  using chainht_slab_reclaim_type = GpuChainHT::gpu_chainht<simple_slab_alloc_type, simple_debra_reclaim_type>;
 
-  std::cout << "Benchmarking masstree_slab_reclaim_type no-suffix" << std::endl;
-  bench_masstree_insertion_find<masstree_slab_reclaim_type, false>(
+  std::cout << "Benchmarking chainht_slab_reclaim_type" << std::endl;
+  bench_chainht_insertion_find<chainht_slab_reclaim_type>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, num_experiments, validate_result, validate_index
-  );
-  std::cout << "Benchmarking masstree_slab_reclaim_type suffix" << std::endl;
-  bench_masstree_insertion_find<masstree_slab_reclaim_type, true>(
-    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, num_experiments, validate_result, validate_index
+    num_keys, fill_factor, max_key_length, num_experiments, validate_result, validate_index
   );
   
 }

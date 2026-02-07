@@ -346,6 +346,45 @@ struct gpu_chainht {
     return false;
   }
 
+  // device-side debug functions
+  template <typename tile_type, typename Func>
+  DEVICE_QUALIFIER void cooperative_traverse_buckets(Func& task, const tile_type& tile) {
+    // debug-purpose, so inefficient implementation
+    // called with single warp
+    using bucket_type = chainht_bucket<tile_type>;
+    device_allocator_context_type allocator{allocator_, tile};
+    for (size_type bucket_index = 0; bucket_index < num_buckets_; bucket_index++) {
+      auto bucket = bucket_type(d_table_ + (bucket_size * bucket_index), tile);
+      bucket.template load<cuda_memory_order::weak>();
+      task.exec(bucket, bucket_index, tile, allocator);
+      while (bucket.has_next()) {
+        auto next_index = bucket.get_next_index();
+        bucket = bucket_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
+        bucket.template load<cuda_memory_order::weak>();
+        task.exec(bucket, -1, tile, allocator);
+      }
+    }
+  }
+
+  template <typename func>
+  void traverse_buckets() {
+    kernel::GpuChainHT::traverse_buckets_kernel<func><<<1, 32>>>(*this);
+    cudaDeviceSynchronize();
+  }
+
+  struct print_bucket_task {
+    DEVICE_QUALIFIER void init(bool lead_lane) {}
+    template <typename bucket_type, typename tile_type>
+    DEVICE_QUALIFIER void exec(const bucket_type& bucket, int head_index, const tile_type& tile, device_allocator_context_type& allocator) {
+      if (head_index >= 0 && tile.thread_rank() == 0) printf("HEAD[%d] ", head_index);
+      bucket.print(allocator);
+    }
+    DEVICE_QUALIFIER void fini() {}
+  };
+  void print() {
+    traverse_buckets<print_bucket_task>();
+  }
+
   void validate() {
     // TODO
   }
@@ -380,10 +419,18 @@ struct gpu_chainht {
       exponent *= prime_multiplier;
     }
     // 3. reduce sum
-    for (uint32_t offset = (cg_tile_size / 2); offset > 0; offset >>= 1) {
+    for (uint32_t offset = (cg_tile_size / 2); offset != 0; offset >>= 1) {
       value += tile.shfl_down(value, offset);
     }
-    return tile.shfl(value, 0);
+    value = tile.shfl(value, 0);
+    // 4. finalize
+    value ^= (key_length * 0x9e3779b1); // embed length
+    value ^= value >> 16; // murmur3 finalizer
+    value *= 0x85ebca6b;
+    value ^= value >> 13;
+    value *= 0xc2b2ae35;
+    value ^= value >> 16;
+    return value;
   }
 
   template <typename tile_type>

@@ -422,6 +422,19 @@ struct erase_device_func {
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
+template <typename func, typename chainht>
+__global__ void traverse_buckets_kernel(chainht table) {
+  // called with single warp; not parallelized for debug purpose
+  assert(gridDim.x == 1 && gridDim.y == 1 && gridDim.z == 1);
+  assert(blockDim.x == 32 && blockDim.y == 1 && blockDim.z == 1);
+  auto block = cg::this_thread_block();
+  auto tile  = cg::tiled_partition<chainht::cg_tile_size>(block);
+  func task;
+  task.init(tile.thread_rank() == 0);
+  table.cooperative_traverse_buckets(task, tile);
+  task.fini();
+}
+
 } // namespace GpuChainHT
 
 } // namespace kernel

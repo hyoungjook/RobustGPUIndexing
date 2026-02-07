@@ -42,7 +42,7 @@ class MapTest : public testing::Test {
   MapTest() {
     host_allocator_ = new typename map_data::host_allocator();
     host_reclaimer_ = new typename map_data::host_reclaimer();
-    std::size_t num_buckets = static_cast<std::size_t>(static_cast<double>(num_keys) / fill_factor);
+    std::size_t num_buckets = std::max(static_cast<std::size_t>(static_cast<double>(num_keys) / 15.0f / fill_factor), 1UL);
     map_ = new typename map_data::map(*host_allocator_, *host_reclaimer_, num_buckets);
   }
   ~MapTest() override {

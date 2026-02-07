@@ -111,9 +111,7 @@ struct chainht_bucket {
   }
   DEVICE_QUALIFIER void set_has_next() {
     metadata_ |= next_bit_mask_;
-  }
-  DEVICE_QUALIFIER void unset_has_next() {
-    metadata_ &= ~next_bit_mask_;
+    write_metadata_to_registers();
   }
   DEVICE_QUALIFIER value_type get_next_index() const {
     return tile_.shfl(lane_elem_, next_ptr_lane_);
