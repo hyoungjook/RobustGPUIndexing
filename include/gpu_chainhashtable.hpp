@@ -531,7 +531,10 @@ struct gpu_chainhashtable {
     // 1. exponent = [1, p, p^2, ..., p^31]; parallel prefix product
     uint32_t exponent = (tile.thread_rank() == 0) ? 1 : hash_prime0;
     for (uint32_t offset = 1; offset < cg_tile_size; offset <<= 1) {
-      exponent *= tile.shfl_up(exponent, offset);
+      auto up_exponent = tile.shfl_up(exponent, offset);
+      if (tile.thread_rank() >= offset) {
+        exponent *= up_exponent;
+      }
     }
     // 2. compute per-lane value
     uint32_t hash = 0;
@@ -562,8 +565,12 @@ struct gpu_chainhashtable {
     uint32_t exponent0 = (tile.thread_rank() == 0) ? 1 : hash_prime0;
     uint32_t exponent1 = (tile.thread_rank() == 0) ? 1 : hash_prime1;
     for (uint32_t offset = 1; offset < cg_tile_size; offset <<= 1) {
-      exponent0 *= tile.shfl_up(exponent0, offset);
-      exponent1 *= tile.shfl_up(exponent1, offset);
+      auto up_exponent0 = tile.shfl_up(exponent0, offset);
+      auto up_exponent1 = tile.shfl_up(exponent1, offset);
+      if (tile.thread_rank() >= offset) {
+        exponent0 *= up_exponent0;
+        exponent1 *= up_exponent1;
+      }
     }
     // 2. compute per-lane value
     uint32_t hash = 0, hash1 = 0;

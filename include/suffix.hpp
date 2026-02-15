@@ -156,8 +156,12 @@ struct suffix_node {
     uint32_t exponent0 = (tile_.thread_rank() == 0) ? 1 : prime0;
     uint32_t exponent1 = (tile_.thread_rank() == 0) ? 1 : prime1;
     for (uint32_t offset = 1; offset < node_width; offset <<= 1) {
-      exponent0 *= tile_.shfl_up(exponent0, offset);
-      exponent1 *= tile_.shfl_up(exponent1, offset);
+      auto up_exponent0 = tile_.shfl_up(exponent0, offset);
+      auto up_exponent1 = tile_.shfl_up(exponent1, offset);
+      if (tile_.thread_rank() >= offset) {
+        exponent0 *= up_exponent0;
+        exponent1 *= up_exponent1;
+      }
     }
     // prime_multiplier = p^31
     static constexpr uint32_t prime0_multiplier = utils::constexpr_pow(prime0, node_max_len_);

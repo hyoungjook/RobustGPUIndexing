@@ -537,8 +537,12 @@ struct gpu_cuckoohashtable {
     uint32_t exponent0 = (tile.thread_rank() == 0) ? 1 : hash_prime0;
     uint32_t exponent1 = (tile.thread_rank() == 0) ? 1 : hash_prime1;
     for (uint32_t offset = 1; offset < cg_tile_size; offset <<= 1) {
-      exponent0 *= tile.shfl_up(exponent0, offset);
-      exponent1 *= tile.shfl_up(exponent1, offset);
+      auto up_exponent0 = tile.shfl_up(exponent0, offset);
+      auto up_exponent1 = tile.shfl_up(exponent1, offset);
+      if (tile.thread_rank() >= offset) {
+        exponent0 *= up_exponent0;
+        exponent1 *= up_exponent1;
+      }
     }
     // 2. compute per-lane value
     uint32_t hash = 0, hash1 = 0;
@@ -548,7 +552,7 @@ struct gpu_cuckoohashtable {
         hash += exponent0 * slice;
         hash1 += exponent1 * slice;
       }
-      if (key_length < cg_tile_size) { break; }
+      if (key_length <= cg_tile_size) { break; }
       key += cg_tile_size;
       key_length -= cg_tile_size;
       exponent0 *= prime0_multiplier;
@@ -566,14 +570,6 @@ struct gpu_cuckoohashtable {
     hash = hash_murmur3_finalizer(hash);
     return make_uint2(tile.shfl(hash, 0), tile.shfl(hash, cg_tile_size - 1));
   }
-  struct single_slice_hasher {
-    DEVICE_QUALIFIER uint32_t operator()(uint32_t key) {
-      // if length == 1, hash = p * (1 + p * key[0])
-      uint32_t hash = prime_ * (1 + prime_ * key);
-      return hash_murmur3_finalizer(hash);
-    }
-    uint32_t prime_;
-  };
   template <typename tile_type>
   DEVICE_QUALIFIER void compute_hashx2_single_slice(const key_slice_type& key,
                                                     uint32_t out_hash[2],
