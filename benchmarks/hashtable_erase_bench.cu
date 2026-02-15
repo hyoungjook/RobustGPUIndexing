@@ -214,6 +214,8 @@ int main(int argc, char** argv) {
   using simple_debra_reclaim_type = simple_debra_reclaimer<131072>;
   using chainhashtable_slab_type = GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_dummy_reclaim_type>;
   using chainhashtable_slab_reclaim_type = GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type>;
+  using cuckoohashtable_slab_type = GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_dummy_reclaim_type>;
+  using cuckoohashtable_slab_reclaim_type = GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type>;
 
   std::cout << "Benchmarking chainhashtable_slab_reclaim_type no-merge prefix4longkey" << std::endl;
   bench_hashtable_insertion_erase<chainhashtable_slab_reclaim_type, false, false>(
@@ -232,6 +234,16 @@ int main(int argc, char** argv) {
   );
   std::cout << "Benchmarking chainhashtable_slab_reclaim_type merge hash4longkey" << std::endl;
   bench_hashtable_insertion_erase<chainhashtable_slab_reclaim_type, true, true>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
+    num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
+  );
+  std::cout << "Benchmarking cuckoohashtable_slab_reclaim_type prefix4longkey" << std::endl;
+  bench_hashtable_insertion_erase<cuckoohashtable_slab_reclaim_type, false, false>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
+    num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
+  );
+  std::cout << "Benchmarking cuckoohashtable_slab_reclaim_type hash4longkey" << std::endl;
+  bench_hashtable_insertion_erase<cuckoohashtable_slab_reclaim_type, false, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
     num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
   );
