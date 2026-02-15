@@ -29,6 +29,7 @@ struct hashtable_node {
   using value_type = elem_type;
   using size_type = uint32_t;
   static constexpr int node_width = 16;
+  static constexpr int capacity = node_width - 1;
   DEVICE_QUALIFIER hashtable_node(const tile_type& tile): tile_(tile) {}
   DEVICE_QUALIFIER hashtable_node(elem_type* ptr, const tile_type& tile)
       : node_ptr_(ptr), tile_(tile)
@@ -127,6 +128,7 @@ struct hashtable_node {
     return static_cast<bool>(metadata_ & head_bit_mask_);
   }
 
+  DEVICE_QUALIFIER elem_type* get_node_ptr() const { return node_ptr_; }
   static DEVICE_QUALIFIER bool is_locked(elem_type* bucket_ptr, const tile_type& tile) {
     elem_type metadata;
     if (tile.thread_rank() == metadata_lane_) {
@@ -162,6 +164,14 @@ struct hashtable_node {
     return tile_.ballot(is_valid_key_lane() &&
                         lane_elem_ == key &&
                         get_suffix_of_location(tile_.thread_rank()) == more_key);
+  }
+  template <typename hasher>
+  DEVICE_QUALIFIER uint32_t compute_hash_for_single_slice(hasher& hash) const {
+    uint32_t result;
+    if (is_valid_key_lane() && !get_suffix_of_location(tile_.thread_rank())) {
+      result = hash(lane_elem_);
+    }
+    return result;
   }
 
   DEVICE_QUALIFIER void insert(const key_type& key, const value_type& value, bool more_key) {
@@ -312,6 +322,7 @@ struct hashtable_node {
   static constexpr uint32_t suffix_bits_mask_ = ((1u << suffix_bits_bits_) - 1) << suffix_bits_offset_;
   static constexpr uint32_t max_num_keys_ = node_width - 1;
   static_assert(num_keys_offset_ == 0); // this allows (metadata +/- N) equivalent to (num_keys +/- N) within range
+  static_assert(max_num_keys_ == capacity);
 
   uint32_t metadata_;
 };

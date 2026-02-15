@@ -55,12 +55,11 @@ bench_rates bench_hashtable_insertion_erase(thrust::device_vector<key_slice_type
   cudaStream_t erase_stream{0};
   float average_insertion_seconds(0.0f);
   float average_erase_seconds(0.0f);
-  std::size_t num_buckets = std::max(static_cast<std::size_t>(static_cast<double>(num_keys) / 15.0f / fill_factor), 1UL);
 
   for (std::size_t exp = 0; exp < num_experiments; exp++) {
     typename hashtable_type::host_allocator_type host_alloc;
     typename hashtable_type::host_reclaimer_type host_reclaim;
-    hashtable_type table(host_alloc, host_reclaim, num_buckets);
+    hashtable_type table(host_alloc, host_reclaim, num_keys, fill_factor);
     auto memory_usage = utils::compute_device_memory_usage();
     std::cout << "Using: " << double(memory_usage.used_bytes) / double(1 << 30) << " GiBs"
               << std::endl;

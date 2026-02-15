@@ -42,8 +42,7 @@ class MapTest : public testing::Test {
   MapTest() {
     host_allocator_ = new typename map_data::host_allocator();
     host_reclaimer_ = new typename map_data::host_reclaimer();
-    std::size_t num_buckets = std::max(static_cast<std::size_t>(static_cast<double>(num_keys) / 15.0f / fill_factor), 1UL);
-    map_ = new typename map_data::map(*host_allocator_, *host_reclaimer_, num_buckets);
+    map_ = new typename map_data::map(*host_allocator_, *host_reclaimer_, num_keys, fill_factor);
   }
   ~MapTest() override {
     //host_allocator_->print_stats();
@@ -149,7 +148,8 @@ using simple_dummy_reclaim_type = simple_dummy_reclaimer;
 using simple_debra_reclaim_type = simple_debra_reclaimer<>;
 
 typedef testing::Types<
-    MapData<GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type>>>
+    MapData<GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type>>,
+    MapData<GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type>>>
     Implementations;
 
 TYPED_TEST_SUITE(MapTest, Implementations);

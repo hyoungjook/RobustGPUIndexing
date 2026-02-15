@@ -150,6 +150,63 @@ struct suffix_node {
   }
 
   template <cuda_memory_order order>
+  DEVICE_QUALIFIER void compute_polynomial(const uint32_t prime[2],
+                                           uint32_t out_hash[2]) const {
+    // compute (1 * s[0]) + (p * s[1]) + (p^2 * s[2]) + ... + (p^(l-1) * s[l-1])
+    // 1. exponent = [1, p, p^2, ..., p^31]
+    uint32_t exponent0 = (tile_.thread_rank() == 0) ? 1 : prime[0];
+    uint32_t exponent1 = (tile_.thread_rank() == 0) ? 1 : prime[1];
+    for (uint32_t offset = 1; offset < node_width; offset <<= 1) {
+      exponent0 *= tile_.shfl_up(exponent0, offset);
+      exponent1 *= tile_.shfl_up(exponent1, offset);
+    }
+    // prime_multiplier = p^31
+    const uint32_t prime0_multiplier = tile_.shfl(exponent0, node_max_len_);
+    const uint32_t prime1_multiplier = tile_.shfl(exponent1, node_max_len_);
+    // 2. compute per-lane value
+    auto this_length = get_key_length();
+    out_hash[0] = out_hash[1] = 0;
+    // ignore first two elements in head;
+    //  also make exponent [p^29, p^30, 1, p, p^2, ..., p^28, x]
+    {
+      auto shifted_exponent = tile_.shfl_down(exponent0, node_max_len_ -2);
+      exponent0 = tile_.shfl_up(exponent0, 2);
+      if (tile_.thread_rank() < 2) { exponent0 = shifted_exponent; }
+      shifted_exponent = tile_.shfl_down(exponent1, node_max_len_ -2);
+      exponent1 = tile_.shfl_up(exponent1, 2);
+      if (tile_.thread_rank() < 2) { exponent1 = shifted_exponent; }
+    }
+    this_length += 2;
+    uint32_t skip_elems = 2;
+    auto elem = lane_elem_;
+    while (true) {
+      if (skip_elems <= tile_.thread_rank() &&
+          tile_.thread_rank() < node_max_len_ &&
+          tile_.thread_rank() < this_length) {
+        out_hash[0] += exponent0 * elem;
+        out_hash[1] += exponent1 * elem;
+      }
+      if (this_length <= node_max_len_) { break; }
+      this_length -= node_max_len_;
+      auto next_index = tile_.shfl(elem, next_lane_);
+      auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
+      elem = cuda_memory<elem_type, order>::load(next_ptr + tile_.thread_rank());
+      if (skip_elems <= tile_.thread_rank()) {
+        exponent0 *= prime0_multiplier;
+        exponent1 *= prime1_multiplier;
+      }
+      skip_elems = 0;
+    }
+    // 3. reduce sum
+    for (uint32_t offset = (node_width / 2); offset != 0; offset >>= 1) {
+      out_hash[0] += tile_.shfl_down(out_hash[0], offset);
+      out_hash[1] += tile_.shfl_down(out_hash[1], offset);
+    }
+    out_hash[0] = tile_.shfl(out_hash[0], 0);
+    out_hash[1] = tile_.shfl(out_hash[1], 0);
+  }
+
+  template <cuda_memory_order order>
   DEVICE_QUALIFIER void create_from(const elem_type* key, size_type key_length, elem_type value) {
     // head node metadata
     elem_type elem;
