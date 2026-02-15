@@ -149,23 +149,22 @@ struct suffix_node {
     assert(false);
   }
 
-  template <cuda_memory_order order>
-  DEVICE_QUALIFIER void compute_polynomial(const uint32_t prime[2],
-                                           uint32_t out_hash[2]) const {
+  template <uint32_t prime0, uint32_t prime1, cuda_memory_order order>
+  DEVICE_QUALIFIER uint2 compute_polynomial() const {
     // compute (1 * s[0]) + (p * s[1]) + (p^2 * s[2]) + ... + (p^(l-1) * s[l-1])
     // 1. exponent = [1, p, p^2, ..., p^31]
-    uint32_t exponent0 = (tile_.thread_rank() == 0) ? 1 : prime[0];
-    uint32_t exponent1 = (tile_.thread_rank() == 0) ? 1 : prime[1];
+    uint32_t exponent0 = (tile_.thread_rank() == 0) ? 1 : prime0;
+    uint32_t exponent1 = (tile_.thread_rank() == 0) ? 1 : prime1;
     for (uint32_t offset = 1; offset < node_width; offset <<= 1) {
       exponent0 *= tile_.shfl_up(exponent0, offset);
       exponent1 *= tile_.shfl_up(exponent1, offset);
     }
     // prime_multiplier = p^31
-    const uint32_t prime0_multiplier = tile_.shfl(exponent0, node_max_len_);
-    const uint32_t prime1_multiplier = tile_.shfl(exponent1, node_max_len_);
+    static constexpr uint32_t prime0_multiplier = utils::constexpr_pow(prime0, node_max_len_);
+    static constexpr uint32_t prime1_multiplier = utils::constexpr_pow(prime1, node_max_len_);
     // 2. compute per-lane value
     auto this_length = get_key_length();
-    out_hash[0] = out_hash[1] = 0;
+    uint32_t hash = 0, hash1 = 0;
     // ignore first two elements in head;
     //  also make exponent [p^29, p^30, 1, p, p^2, ..., p^28, x]
     {
@@ -183,8 +182,8 @@ struct suffix_node {
       if (skip_elems <= tile_.thread_rank() &&
           tile_.thread_rank() < node_max_len_ &&
           tile_.thread_rank() < this_length) {
-        out_hash[0] += exponent0 * elem;
-        out_hash[1] += exponent1 * elem;
+        hash += exponent0 * elem;
+        hash1 += exponent1 * elem;
       }
       if (this_length <= node_max_len_) { break; }
       this_length -= node_max_len_;
@@ -199,11 +198,10 @@ struct suffix_node {
     }
     // 3. reduce sum
     for (uint32_t offset = (node_width / 2); offset != 0; offset >>= 1) {
-      out_hash[0] += tile_.shfl_down(out_hash[0], offset);
-      out_hash[1] += tile_.shfl_down(out_hash[1], offset);
+      hash += tile_.shfl_down(hash, offset);
+      hash1 += tile_.shfl_down(hash1, offset);
     }
-    out_hash[0] = tile_.shfl(out_hash[0], 0);
-    out_hash[1] = tile_.shfl(out_hash[1], 0);
+    return make_uint2(tile_.shfl(hash, 0), tile_.shfl(hash1, 0));
   }
 
   template <cuda_memory_order order>

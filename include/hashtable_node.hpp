@@ -165,14 +165,6 @@ struct hashtable_node {
                         lane_elem_ == key &&
                         get_suffix_of_location(tile_.thread_rank()) == more_key);
   }
-  template <typename hasher>
-  DEVICE_QUALIFIER uint32_t compute_hash_for_single_slice(hasher& hash) const {
-    uint32_t result;
-    if (is_valid_key_lane() && !get_suffix_of_location(tile_.thread_rank())) {
-      result = hash(lane_elem_);
-    }
-    return result;
-  }
 
   DEVICE_QUALIFIER void insert(const key_type& key, const value_type& value, bool more_key) {
     assert(!is_full());

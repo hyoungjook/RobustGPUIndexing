@@ -514,9 +514,6 @@ struct gpu_chainhashtable {
     return node;
   }
 
-  __host__ __device__ static constexpr uint32_t _constexpr_pow(uint32_t base, uint32_t exp) {
-    return (exp == 0) ? 1 : base * _constexpr_pow(base, exp - 1);
-  }
   static constexpr uint32_t hash_prime0 = 0x9e3779b1;
   static constexpr uint32_t hash_prime1 = 0x01000193;
   static DEVICE_QUALIFIER uint32_t hash_murmur3_finalizer(uint32_t hash) {
@@ -530,7 +527,7 @@ struct gpu_chainhashtable {
   template <typename tile_type>
   DEVICE_QUALIFIER uint32_t compute_hash(const key_slice_type* key, size_type key_length, const tile_type& tile) {
     // parallel polynomial rolling hash
-    static constexpr uint32_t prime_multiplier = _constexpr_pow(hash_prime0, cg_tile_size);
+    static constexpr uint32_t prime_multiplier = utils::constexpr_pow(hash_prime0, cg_tile_size);
     // 1. exponent = [1, p, p^2, ..., p^31]; parallel prefix product
     uint32_t exponent = (tile.thread_rank() == 0) ? 1 : hash_prime0;
     for (uint32_t offset = 1; offset < cg_tile_size; offset <<= 1) {
@@ -559,8 +556,8 @@ struct gpu_chainhashtable {
   }
   template <typename tile_type>
   DEVICE_QUALIFIER uint2 compute_hashx2(const key_slice_type* key, size_type key_length, const tile_type& tile) {
-    static constexpr uint32_t prime0_multiplier = _constexpr_pow(hash_prime0, cg_tile_size);
-    static constexpr uint32_t prime1_multiplier = _constexpr_pow(hash_prime1, cg_tile_size);
+    static constexpr uint32_t prime0_multiplier = utils::constexpr_pow(hash_prime0, cg_tile_size);
+    static constexpr uint32_t prime1_multiplier = utils::constexpr_pow(hash_prime1, cg_tile_size);
     // 1. exponent = [1, p, p^2, ..., p^31]; parallel prefix product
     uint32_t exponent0 = (tile.thread_rank() == 0) ? 1 : hash_prime0;
     uint32_t exponent1 = (tile.thread_rank() == 0) ? 1 : hash_prime1;

@@ -52,7 +52,7 @@ struct gpu_cuckoohashtable {
   static std::size_t constexpr bucket_bytes = sizeof(elem_type) * bucket_size;
   static auto constexpr cg_tile_size = 32;
   using hashtable_type = gpu_cuckoohashtable<Allocator, Reclaimer>;
-  static auto constexpr num_hfs = 3;
+  static auto constexpr num_hfs = 4;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
@@ -246,20 +246,20 @@ struct gpu_cuckoohashtable {
     using node_type = hashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     static constexpr auto memory_order = concurrent ? cuda_memory_order::relaxed : cuda_memory_order::weak;
-    auto hash = compute_hashx3(key, key_length, tile);
+    auto hash = compute_hashx2(key, key_length, tile);
     const bool more_key = (key_length > 1);
     key_slice_type first_slice = (use_hash_for_longkey && more_key) ?
-        (hash.x + hash.y + hash.z) : key[0];
-    node_type nodes[num_hfs] = {
-      node_type(d_table_ + (bucket_size * ((hash.x % num_buckets_per_hf_))), tile),
-      node_type(d_table_ + (bucket_size * ((hash.y % num_buckets_per_hf_) + (num_buckets_per_hf_))), tile),
-      node_type(d_table_ + (bucket_size * ((hash.z % num_buckets_per_hf_) + (2 * num_buckets_per_hf_))), tile)
+        (hash.x + hash.y) : key[0];
+    uint32_t table_i = ((hash.x ^ hash.y) * hash_prime2) % num_hfs; // 2-in-d cuckoo hashing
+    node_type nodes[2] = {
+      node_type(d_table_ + (bucket_size * ((hash.x % num_buckets_per_hf_) + (table_i * num_buckets_per_hf_))), tile),
+      node_type(d_table_ + (bucket_size * ((hash.y % num_buckets_per_hf_) + (((table_i + 1) % num_hfs) * num_buckets_per_hf_))), tile)
     };
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
     while (true) {
       // TODO version check
-      for (int i = 0; i < num_hfs; i++) {
+      for (int i = 0; i < 2; i++) {
         nodes[i].template load<memory_order>();
         location_if_found = coop_get_key_location_from_node<concurrent, use_hash_for_longkey>(
             nodes[i], first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
@@ -282,22 +282,31 @@ struct gpu_cuckoohashtable {
                                            bool update_if_exists = false) {
     using node_type = hashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    auto hash = compute_hashx3(key, key_length, tile);
+    auto hash = compute_hashx2(key, key_length, tile);
     const bool more_key = (key_length > 1);
     key_slice_type first_slice = (use_hash_for_longkey && more_key) ?
-        (hash.x + hash.y + hash.z) : key[0];
-    node_type nodes[num_hfs] = {
-      node_type(d_table_ + (bucket_size * ((hash.x % num_buckets_per_hf_))), tile),
-      node_type(d_table_ + (bucket_size * ((hash.y % num_buckets_per_hf_) + (num_buckets_per_hf_))), tile),
-      node_type(d_table_ + (bucket_size * ((hash.z % num_buckets_per_hf_) + (2 * num_buckets_per_hf_))), tile)
+        (hash.x + hash.y) : key[0];
+    uint32_t table_i[2]; // 2-in-d cuckoo hashing
+    table_i[0] = ((hash.x ^ hash.y) * hash_prime2) % num_hfs;
+    table_i[1] = (table_i[0] + 1) % num_hfs;
+    node_type nodes[2] = {
+      node_type(d_table_ + (bucket_size * ((hash.x % num_buckets_per_hf_) + (table_i[0] * num_buckets_per_hf_))), tile),
+      node_type(d_table_ + (bucket_size * ((hash.y % num_buckets_per_hf_) + (table_i[1] * num_buckets_per_hf_))), tile)
     };
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
     while (true) {
-      // === Phase 1. Lock all three nodes, if not exists, insert ===
-      for (int j = 0; j < num_hfs; j++) { node_type::lock(nodes[j].get_node_ptr(), tile); }
+      // === Phase 1. Lock all nodes, if not exists, insert ===
+      if (table_i[0] < 2) {
+        node_type::lock(nodes[0].get_node_ptr(), tile);
+        node_type::lock(nodes[1].get_node_ptr(), tile);
+      }
+      else {
+        node_type::lock(nodes[1].get_node_ptr(), tile);
+        node_type::lock(nodes[0].get_node_ptr(), tile);
+      }
       // Check if exists
-      for (int i = 0; i < num_hfs; i++) {
+      for (int i = 0; i < 2; i++) {
         nodes[i].template load<cuda_memory_order::relaxed>();
         location_if_found = coop_get_key_location_from_node<true, use_hash_for_longkey>(
             nodes[i], first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
@@ -312,14 +321,14 @@ struct gpu_cuckoohashtable {
               nodes[i].template store<cuda_memory_order::relaxed>();
             }
           }
-          for (int j = 0; j < num_hfs; j++) {
+          for (int j = 0; j < 2; j++) {
             node_type::unlock(nodes[j].get_node_ptr(), tile);
           }
           return update_if_exists;
         }
       }
       // Try insert if not full
-      for (int i = 0; i < num_hfs; i++) {
+      for (int i = 0; i < 2; i++) {
         if (!nodes[i].is_full()) {
           value_type to_insert = value;
           if (more_key) {
@@ -333,34 +342,23 @@ struct gpu_cuckoohashtable {
           }
           nodes[i].insert(first_slice, to_insert, more_key);
           nodes[i].template store<cuda_memory_order::relaxed>();
-          for (int j = 0; j < num_hfs; j++) {
+          for (int j = 0; j < 2; j++) {
             node_type::unlock(nodes[j].get_node_ptr(), tile);
           }
           return true;
         }
       }
       // All nodes are full.
-      for (int j = 0; j < num_hfs; j++) {
+      for (int j = 0; j < 2; j++) {
         node_type::unlock(nodes[j].get_node_ptr(), tile);
       }
       // === Phase 2. Try find cuckoo path with BFS, depth=1 ===
       bool continue_to_retry = false; // if we made the empty slot
-      for (int i = 0; i < num_hfs; i++) {
+      for (int i = 0; i < 2; i++) {
         nodes[i].template load<cuda_memory_order::relaxed>();
         if (!nodes[i].is_full()) {
           continue_to_retry = true;
           break;
-        }
-        // prime for two other hash functions
-        uint32_t primes[2]; // {hash_prime[(i + 1) % 3], hash_prime[(i + 2) % 3]};
-        if (i == 0) { primes[0] = hash_prime1; primes[1] = hash_prime2; }
-        else if (i == 1) { primes[0] = hash_prime2; primes[1] = hash_prime0; }
-        else { primes[0] = hash_prime0; primes[1] = hash_prime1; }
-        uint32_t single_slice_hash[2];
-        // compute hash for non-suffix keys
-        for (int j = 0; j < 2; j++) {
-          single_slice_hasher hasher{primes[j]};
-          single_slice_hash[j] = nodes[i].compute_hash_for_single_slice(hasher);
         }
         for (uint32_t loc = 0; loc < nodes[i].capacity; loc++) {
           // compute hash for suffix key
@@ -371,55 +369,51 @@ struct gpu_cuckoohashtable {
                 reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
             suffix.template load_head<cuda_memory_order::relaxed>();
             compute_hashx2_for_suffix<use_hash_for_longkey, cuda_memory_order::relaxed>(
-                suffix, use_hash_for_longkey ? 0 : nodes[i].get_key_from_location(loc), primes, hash, tile);
+                suffix, use_hash_for_longkey ? 0 : nodes[i].get_key_from_location(loc), hash, tile);
           }
           else {
-            for (int j = 0; j < 2; j++) {
-              hash[j] = tile.shfl(single_slice_hash[j], loc);
-            }
+            compute_hashx2_single_slice(nodes[i].get_key_from_location(loc), hash, tile);
           }
-          // check other two nodes
-          for (int j = 0; j < 2; j++) {
-            int table_index = (i + 1 + j) % num_hfs;
-            auto other_node = node_type(d_table_ + (bucket_size * ((hash[j] % num_buckets_per_hf_) + (table_index * num_buckets_per_hf_))), tile);
+          uint32_t target_table_i = ((hash[0] ^ hash[1]) * hash_prime2) % num_hfs;
+          if (target_table_i == table_i[i]) {
+            target_table_i = (target_table_i + 1) % num_hfs;
+            hash[0] = hash[1];
+          }
+          else { assert((target_table_i + 1) % num_hfs == table_i[i]); }
+          // check other node
+          auto other_node = node_type(d_table_ + (bucket_size * ((hash[0] % num_buckets_per_hf_) + (target_table_i * num_buckets_per_hf_))), tile);
+          other_node.template load<cuda_memory_order::relaxed>();
+          if (!other_node.is_full()) {
+            // found the space
+            if (i < target_table_i) {
+              node_type::lock(nodes[i].get_node_ptr(), tile);
+              node_type::lock(other_node.get_node_ptr(), tile);
+            }
+            else {
+              node_type::lock(other_node.get_node_ptr(), tile);
+              node_type::lock(nodes[i].get_node_ptr(), tile);
+            }
+            nodes[i].template load<cuda_memory_order::relaxed>();
             other_node.template load<cuda_memory_order::relaxed>();
-            if (!other_node.is_full()) {
-              // found the space
-              if (i < table_index) {
-                node_type::lock(nodes[i].get_node_ptr(), tile);
-                node_type::lock(other_node.get_node_ptr(), tile);
-              }
-              else {
-                node_type::lock(other_node.get_node_ptr(), tile);
-                node_type::lock(nodes[i].get_node_ptr(), tile);
-              }
-              nodes[i].template load<cuda_memory_order::relaxed>();
-              other_node.template load<cuda_memory_order::relaxed>();
-              if (!nodes[i].is_full()) {
-                node_type::unlock(nodes[i].get_node_ptr(), tile);
-                node_type::unlock(other_node.get_node_ptr(), tile);
-                continue_to_retry = true;
-                break;
-              }
-              if (!other_node.is_full()) {
-                // locked the non-full node; do the cuckoo
-                key_slice_type key = nodes[i].get_key_from_location(loc);
-                value_type value = nodes[i].get_value_from_location(loc);
-                bool more_key = nodes[i].get_suffix_of_location(loc);
-                other_node.insert(key, value, more_key);
-                nodes[i].erase(loc);
-                // Store order matters here
-                other_node.template store<cuda_memory_order::relaxed>();
-                __threadfence();
-                nodes[i].template store<cuda_memory_order::relaxed>();
-                continue_to_retry = true;
-              }
-              node_type::unlock(nodes[i].get_node_ptr(), tile);
-              node_type::unlock(other_node.get_node_ptr(), tile);
-              if (continue_to_retry) { break; }
+            if (!nodes[i].is_full()) {
+              continue_to_retry = true;
             }
+            else if (!other_node.is_full()) {
+              // locked the non-full node; do the cuckoo
+              key_slice_type key = nodes[i].get_key_from_location(loc);
+              value_type value = nodes[i].get_value_from_location(loc);
+              bool more_key = nodes[i].get_suffix_of_location(loc);
+              other_node.insert(key, value, more_key);
+              nodes[i].erase(loc);
+              other_node.template store<cuda_memory_order::relaxed>();
+              __threadfence();
+              nodes[i].template store<cuda_memory_order::relaxed>();
+              continue_to_retry = true;
+            }
+            node_type::unlock(nodes[i].get_node_ptr(), tile);
+            node_type::unlock(other_node.get_node_ptr(), tile);
+            if (continue_to_retry) { break; }
           }
-          if (continue_to_retry) { break; }
         }
         if (continue_to_retry) { break; }
       }
@@ -437,22 +431,29 @@ struct gpu_cuckoohashtable {
                                           device_reclaimer_context_type& reclaimer) {
     using node_type = hashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    auto hash = compute_hashx3(key, key_length, tile);
+    auto hash = compute_hashx2(key, key_length, tile);
     const bool more_key = (key_length > 1);
     key_slice_type first_slice = (use_hash_for_longkey && more_key) ?
-        (hash.x + hash.y + hash.z) : key[0];
-    node_type nodes[num_hfs] = {
-      node_type(d_table_ + (bucket_size * ((hash.x % num_buckets_per_hf_))), tile),
-      node_type(d_table_ + (bucket_size * ((hash.y % num_buckets_per_hf_) + (num_buckets_per_hf_))), tile),
-      node_type(d_table_ + (bucket_size * ((hash.z % num_buckets_per_hf_) + (2 * num_buckets_per_hf_))), tile)
+        (hash.x + hash.y) : key[0];
+    uint32_t table_i = ((hash.x ^ hash.y) * hash_prime2) % num_hfs; // 2-in-d cuckoo hashing
+    node_type nodes[2] = {
+      node_type(d_table_ + (bucket_size * ((hash.x % num_buckets_per_hf_) + (table_i * num_buckets_per_hf_))), tile),
+      node_type(d_table_ + (bucket_size * ((hash.y % num_buckets_per_hf_) + (((table_i + 1) % num_hfs) * num_buckets_per_hf_))), tile)
     };
     // lock all nodes in order
     // TODO first try without lock
-    for (int j = 0; j < num_hfs; j++) { node_type::lock(nodes[j].get_node_ptr(), tile); }
+    if (table_i < 2) {
+      node_type::lock(nodes[0].get_node_ptr(), tile);
+      node_type::lock(nodes[1].get_node_ptr(), tile);
+    }
+    else {
+      node_type::lock(nodes[1].get_node_ptr(), tile);
+      node_type::lock(nodes[0].get_node_ptr(), tile);
+    }
     // check nodes
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
-    for (int i = 0; i < num_hfs; i++) {
+    for (int i = 0; i < 2; i++) {
       nodes[i].template load<cuda_memory_order::relaxed>();
       location_if_found = coop_get_key_location_from_node<true, use_hash_for_longkey>(
           nodes[i], first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
@@ -462,7 +463,7 @@ struct gpu_cuckoohashtable {
         if (more_key) {
           suffix_if_found.template retire<cuda_memory_order::relaxed>(reclaimer);
         }
-        for (int j = i; j < num_hfs; j++) {
+        for (int j = i; j < 2; j++) {
           node_type::unlock(nodes[j].get_node_ptr(), tile);
         }
         return true;
@@ -517,9 +518,6 @@ struct gpu_cuckoohashtable {
     return -1;
   }
 
-  __host__ __device__ static constexpr uint32_t _constexpr_pow(uint32_t base, uint32_t exp) {
-    return (exp == 0) ? 1 : base * _constexpr_pow(base, exp - 1);
-  }
   static constexpr uint32_t hash_prime0 = 0x9e3779b1;
   static constexpr uint32_t hash_prime1 = 0x01000193;
   static constexpr uint32_t hash_prime2 = 0xfffffffb;
@@ -532,50 +530,41 @@ struct gpu_cuckoohashtable {
     return hash;
   }
   template <typename tile_type>
-  DEVICE_QUALIFIER uint3 compute_hashx3(const key_slice_type* key, size_type key_length, const tile_type& tile) {
-    static constexpr uint32_t prime0_multiplier = _constexpr_pow(hash_prime0, cg_tile_size);
-    static constexpr uint32_t prime1_multiplier = _constexpr_pow(hash_prime1, cg_tile_size);
-    static constexpr uint32_t prime2_multiplier = _constexpr_pow(hash_prime2, cg_tile_size);
+  DEVICE_QUALIFIER uint2 compute_hashx2(const key_slice_type* key, size_type key_length, const tile_type& tile) {
+    static constexpr uint32_t prime0_multiplier = utils::constexpr_pow(hash_prime0, cg_tile_size);
+    static constexpr uint32_t prime1_multiplier = utils::constexpr_pow(hash_prime1, cg_tile_size);
     // 1. exponent = [1, p, p^2, ..., p^31]; parallel prefix product
     uint32_t exponent0 = (tile.thread_rank() == 0) ? 1 : hash_prime0;
     uint32_t exponent1 = (tile.thread_rank() == 0) ? 1 : hash_prime1;
-    uint32_t exponent2 = (tile.thread_rank() == 0) ? 1 : hash_prime2;
     for (uint32_t offset = 1; offset < cg_tile_size; offset <<= 1) {
       exponent0 *= tile.shfl_up(exponent0, offset);
       exponent1 *= tile.shfl_up(exponent1, offset);
-      exponent2 *= tile.shfl_up(exponent2, offset);
     }
     // 2. compute per-lane value
-    uint32_t hash = 0, hash1 = 0, hash2 = 0;
+    uint32_t hash = 0, hash1 = 0;
     while (true) {
       if (tile.thread_rank() < key_length) {
         auto slice = key[tile.thread_rank()];
         hash += exponent0 * slice;
         hash1 += exponent1 * slice;
-        hash2 += exponent2 * slice;
       }
       if (key_length < cg_tile_size) { break; }
       key += cg_tile_size;
       key_length -= cg_tile_size;
       exponent0 *= prime0_multiplier;
       exponent1 *= prime1_multiplier;
-      exponent2 *= prime2_multiplier;
     }
     // 3. reduce sum
     for (uint32_t offset = (cg_tile_size / 2); offset != 0; offset >>= 1) {
       hash += tile.shfl_down(hash, offset);
-      hash1 += tile.shfl_down(hash1, offset);
-      hash2 += tile.shfl_up(hash2, offset);
+      hash1 += tile.shfl_up(hash1, offset);
     }
     hash = ((hash * hash_prime0) + key_length) * hash_prime0;
     hash1 = ((hash1 * hash_prime1) + key_length) * hash_prime1;
-    hash2 = ((hash2 * hash_prime2) + key_length) * hash_prime2;
-    if (tile.thread_rank() == cg_tile_size - 1) { hash = hash2; }
-    hash1 = tile.shfl(hash1, 0);
-    if (tile.thread_rank() == 1) { hash = hash1; }
+    if (tile.thread_rank() == cg_tile_size - 1) { hash = hash1; }
     // 4. finalize
     hash = hash_murmur3_finalizer(hash);
-    return make_uint3(tile.shfl(hash, 0), tile.shfl(hash, 1), tile.shfl(hash, cg_tile_size - 1));
+    return make_uint2(tile.shfl(hash, 0), tile.shfl(hash, cg_tile_size - 1));
   }
   struct single_slice_hasher {
     DEVICE_QUALIFIER uint32_t operator()(uint32_t key) {
@@ -585,24 +574,35 @@ struct gpu_cuckoohashtable {
     }
     uint32_t prime_;
   };
+  template <typename tile_type>
+  DEVICE_QUALIFIER void compute_hashx2_single_slice(const key_slice_type& key,
+                                                    uint32_t out_hash[2],
+                                                    const tile_type& tile) {
+    // if key_length == 1, hash = murmur3(((key * p) + 1) * p)
+    out_hash[0] = ((key * hash_prime0) + 1) * hash_prime0;
+    out_hash[1] = ((key * hash_prime1) + 1) * hash_prime1;
+    if (tile.thread_rank() == 1) { out_hash[0] = out_hash[1]; }
+    out_hash[0] = hash_murmur3_finalizer(out_hash[0]);
+    out_hash[1] = tile.shfl(out_hash[0], 1);
+    out_hash[0] = tile.shfl(out_hash[0], 0);
+  }
   template <bool use_hash_for_longkey, cuda_memory_order order, typename suffix_type, typename tile_type>
   DEVICE_QUALIFIER void compute_hashx2_for_suffix(const suffix_type& suffix,
                                                   const key_slice_type& first_slice,
-                                                  const uint32_t prime[2],
                                                   uint32_t out_hash[2],
                                                   const tile_type& tile) {
     // compute polynomial
-    suffix.template compute_polynomial<order>(prime, out_hash);
+    auto polynomial = suffix.template compute_polynomial<hash_prime0, hash_prime1, order>();
+    out_hash[0] = polynomial.x;
+    out_hash[1] = polynomial.y;
     if constexpr (!use_hash_for_longkey) {
-      for (int j = 0; j < 2; j++) {
-        out_hash[j] = (out_hash[j] * prime[j]) + first_slice;
-      }
+      out_hash[0] = (out_hash[0] * hash_prime0) + first_slice;
+      out_hash[1] = (out_hash[1] * hash_prime1) + first_slice;
     }
     static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
     uint32_t key_length = suffix.get_key_length() + suffix_offset;
-    for (int j = 0; j < 2; j++) {
-      out_hash[j] = ((out_hash[j] * prime[j]) + key_length) * prime[j];
-    }
+    out_hash[0] = ((out_hash[0] * hash_prime0) + key_length) * hash_prime0;
+    out_hash[1] = ((out_hash[1] * hash_prime1) + key_length) * hash_prime1;
     // finalize
     if (tile.thread_rank() == 1) { out_hash[0] = out_hash[1]; }
     out_hash[0] = hash_murmur3_finalizer(out_hash[0]);
@@ -678,7 +678,7 @@ struct gpu_cuckoohashtable {
         for (int i = 0; i < num_hfs; i++) {
           printf("%lu ", entries_per_table_[i]);
         }
-        printf("\n");
+        printf(")\n");
       }
     }
     bool lead_lane_;
