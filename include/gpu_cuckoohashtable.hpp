@@ -53,7 +53,7 @@ struct gpu_cuckoohashtable {
   static auto constexpr cg_tile_size = 32;
   using hashtable_type = gpu_cuckoohashtable<Allocator, Reclaimer>;
   static auto constexpr num_hfs = 4;
-  static auto constexpr default_max_fill_factor = 0.8f;
+  static auto constexpr default_max_fill_factor = 0.9f;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
@@ -368,11 +368,11 @@ struct gpu_cuckoohashtable {
       }
       // === Phase 3. Try make space with cuckoo, BFS depth=1 ===
       bool cuckoo_succeed = false; // if we made the empty slot
-      #define TRY_MAKE_SPACE_WITH_CUCKOO_FROM_NODE(node) \
+      #define TRY_MAKE_SPACE_WITH_CUCKOO_FROM_NODE(node, current_table_i) \
       assert(node.is_full()); \
       for (uint32_t loc = 0; loc < node.capacity; loc++) { \
         auto other_node = coop_get_other_bucket_of_key_in<use_hash_for_longkey>( \
-            node, loc, table_i, tile, allocator); \
+            node, loc, current_table_i, tile, allocator); \
         if (!other_node.is_full()) { \
           /*found the space*/ \
           key_slice_type target_key = node.get_key_from_location(loc); \
@@ -400,10 +400,9 @@ struct gpu_cuckoohashtable {
           if (cuckoo_succeed) { break; } \
         } \
       }
-      TRY_MAKE_SPACE_WITH_CUCKOO_FROM_NODE(node0)
+      TRY_MAKE_SPACE_WITH_CUCKOO_FROM_NODE(node0, table_i)
       if (cuckoo_succeed) { continue; }
-      table_i = (table_i + 1) % num_hfs;
-      TRY_MAKE_SPACE_WITH_CUCKOO_FROM_NODE(node1)
+      TRY_MAKE_SPACE_WITH_CUCKOO_FROM_NODE(node1, ((table_i + 1) % num_hfs))
       #undef TRY_MAKE_SPACE_WITH_CUCKOO_FROM_NODE
       // Phase 4: Cuckoo failed on depth=1, TODO
       assert(cuckoo_succeed);
