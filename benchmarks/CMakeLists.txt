@@ -4,8 +4,8 @@ set(BENCHMARKS
     masstree_insert_find_bench
     masstree_erase_bench
     masstree_scan_bench
-    chainhashtable_insert_find_bench
-    chainhashtable_erase_bench
+    hashtable_insert_find_bench
+    hashtable_erase_bench
 )
 
 foreach(BENCHMARK ${BENCHMARKS})

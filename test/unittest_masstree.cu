@@ -369,9 +369,7 @@ void test_inserttwiceeraseall(map_type* map, uint32_t min_key_length_bytes, uint
   const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
   const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
   mapped_vector<value_type> find_results(num_keys);
-  testing_input input(num_keys, min_key_length, max_key_length);
-  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
-  cuda_try(cudaDeviceSynchronize());
+  testing_input input(num_keys, min_key_length, max_key_length, true);
   map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), num_keys);
   cuda_try(cudaDeviceSynchronize());
   map->erase(input.keys.data(), max_key_length, input.lengths.data(), num_keys);

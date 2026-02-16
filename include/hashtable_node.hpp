@@ -23,14 +23,15 @@
 #include <suffix.hpp>
 
 template <typename tile_type>
-struct chainhashtable_node {
+struct hashtable_node {
   using elem_type = uint32_t;
   using key_type = elem_type;
   using value_type = elem_type;
   using size_type = uint32_t;
   static constexpr int node_width = 16;
-  DEVICE_QUALIFIER chainhashtable_node(const tile_type& tile): tile_(tile) {}
-  DEVICE_QUALIFIER chainhashtable_node(elem_type* ptr, const tile_type& tile)
+  static constexpr int capacity = node_width - 1;
+  DEVICE_QUALIFIER hashtable_node(const tile_type& tile): tile_(tile) {}
+  DEVICE_QUALIFIER hashtable_node(elem_type* ptr, const tile_type& tile)
       : node_ptr_(ptr), tile_(tile)
   {
     assert(tile_.size() == 2 * node_width);
@@ -99,7 +100,7 @@ struct chainhashtable_node {
   DEVICE_QUALIFIER bool is_full() const {
     return (num_keys() == max_num_keys_);
   }
-  DEVICE_QUALIFIER bool is_mergeable(const chainhashtable_node& next_node) const {
+  DEVICE_QUALIFIER bool is_mergeable(const hashtable_node& next_node) const {
     return (num_keys() + next_node.num_keys()) <= max_num_keys_;
   }
   DEVICE_QUALIFIER bool get_suffix_of_location(int location) const {
@@ -127,6 +128,7 @@ struct chainhashtable_node {
     return static_cast<bool>(metadata_ & head_bit_mask_);
   }
 
+  DEVICE_QUALIFIER elem_type* get_node_ptr() const { return node_ptr_; }
   static DEVICE_QUALIFIER bool is_locked(elem_type* bucket_ptr, const tile_type& tile) {
     elem_type metadata;
     if (tile.thread_rank() == metadata_lane_) {
@@ -163,6 +165,13 @@ struct chainhashtable_node {
                         lane_elem_ == key &&
                         get_suffix_of_location(tile_.thread_rank()) == more_key);
   }
+  DEVICE_QUALIFIER uint32_t match_key_value_in_node(const key_type& key, const value_type& value, bool more_key) const {
+    auto down_elem = tile_.shfl_down(lane_elem_, node_width);
+    return tile_.ballot(is_valid_key_lane() &&
+                        lane_elem_ == key &&
+                        down_elem == value &&
+                        get_suffix_of_location(tile_.thread_rank()) == more_key);
+  }
 
   DEVICE_QUALIFIER void insert(const key_type& key, const value_type& value, bool more_key) {
     assert(!is_full());
@@ -185,7 +194,7 @@ struct chainhashtable_node {
     }
   }
 
-  DEVICE_QUALIFIER void merge(const chainhashtable_node<tile_type>& next_node) {
+  DEVICE_QUALIFIER void merge(const hashtable_node<tile_type>& next_node) {
     assert(is_mergeable(next_node));
     // copy elements from next node
     bool suffix_bit = get_suffix_of_location(tile_.thread_rank());
@@ -232,7 +241,7 @@ struct chainhashtable_node {
     write_metadata_to_registers();
   }
 
-  DEVICE_QUALIFIER chainhashtable_node<tile_type>& operator=(const chainhashtable_node<tile_type>& other) {
+  DEVICE_QUALIFIER hashtable_node<tile_type>& operator=(const hashtable_node<tile_type>& other) {
     node_ptr_ = other.node_ptr_;
     lane_elem_ = other.lane_elem_;
     metadata_ = other.metadata_;
@@ -312,6 +321,7 @@ struct chainhashtable_node {
   static constexpr uint32_t suffix_bits_mask_ = ((1u << suffix_bits_bits_) - 1) << suffix_bits_offset_;
   static constexpr uint32_t max_num_keys_ = node_width - 1;
   static_assert(num_keys_offset_ == 0); // this allows (metadata +/- N) equivalent to (num_keys +/- N) within range
+  static_assert(max_num_keys_ == capacity);
 
   uint32_t metadata_;
 };

@@ -25,8 +25,10 @@
 namespace cg = cooperative_groups;
 namespace kernel {
 
+static constexpr auto target_blocks_per_sm = 8;
+
 template <bool do_reclaim, typename device_func, typename index_type>
-__launch_bounds__(index_type::host_reclaimer_type::block_size_)
+__launch_bounds__(index_type::host_reclaimer_type::block_size_, target_blocks_per_sm)
 __global__ void batch_kernel(index_type index,
                              const device_func func,
                              uint32_t num_requests) {
@@ -66,7 +68,7 @@ __global__ void batch_kernel(index_type index,
 }
 
 template <bool do_reclaim, typename device_func0, typename device_func1, typename index_type>
-__launch_bounds__(index_type::host_reclaimer_type::block_size_)
+__launch_bounds__(index_type::host_reclaimer_type::block_size_, target_blocks_per_sm)
 __global__ void batch_concurrent_two_funcs_kernel(index_type index,
                                                   const device_func0 func0,
                                                   uint32_t num_requests0,
@@ -299,28 +301,27 @@ struct scan_device_func {
   }
 };
 
-template <typename func, typename masstree>
-__global__ void traverse_tree_nodes_kernel(masstree tree) {
+template <typename masstree, typename func>
+__global__ void traverse_tree_nodes_kernel(masstree tree, func task) {
   // called with single warp; not parallelized for debug purpose
   assert(gridDim.x == 1 && gridDim.y == 1 && gridDim.z == 1);
   assert(blockDim.x == 32 && blockDim.y == 1 && blockDim.z == 1);
   auto block = cg::this_thread_block();
   auto tile  = cg::tiled_partition<masstree::cg_tile_size>(block);
-  func task;
-  task.init(tile.thread_rank() == 0);
+  task.init(tile);
   tree.cooperative_traverse_tree_nodes(task, tile);
-  task.fini();
+  task.fini(tile);
 }
 
 } // namespace GpuMasstree
 
-namespace GpuChainHashtable {
+namespace GpuHashtable {
 
-template <typename chainhashtable>
-__global__ void initialize_kernel(chainhashtable table) {
-  using allocator_type = typename chainhashtable::device_allocator_context_type;
+template <typename hashtable>
+__global__ void initialize_kernel(hashtable table) {
+  using allocator_type = typename hashtable::device_allocator_context_type;
   auto block = cg::this_thread_block();
-  auto tile  = cg::tiled_partition<chainhashtable::cg_tile_size>(block);
+  auto tile  = cg::tiled_partition<hashtable::cg_tile_size>(block);
   auto bucket_index = blockIdx.x;
   table.initialize_bucket(bucket_index, tile);
 }
@@ -349,8 +350,8 @@ struct insert_device_func {
       .value = d_values[thread_id]
     };
   }
-  template <typename chainhashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(chainhashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+  template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
@@ -381,8 +382,8 @@ struct find_device_func {
       .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length
     };
   }
-  template <typename chainhashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(chainhashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+  template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = table.template cooperative_find<concurrent, use_hash_for_longkey>(cur_key, cur_key_length, tile, allocator);
@@ -415,8 +416,8 @@ struct erase_device_func {
       .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
     };
   }
-  template <typename chainhashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
-  DEVICE_QUALIFIER void exec(chainhashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+  template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     table.template cooperative_erase<do_merge, use_hash_for_longkey>(cur_key, cur_key_length, tile, allocator, reclaimer);
@@ -424,19 +425,18 @@ struct erase_device_func {
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
-template <typename func, typename chainhashtable>
-__global__ void traverse_nodes_kernel(chainhashtable table) {
+template <typename hashtable, typename func>
+__global__ void traverse_nodes_kernel(hashtable table, func task) {
   // called with single warp; not parallelized for debug purpose
   assert(gridDim.x == 1 && gridDim.y == 1 && gridDim.z == 1);
   assert(blockDim.x == 32 && blockDim.y == 1 && blockDim.z == 1);
   auto block = cg::this_thread_block();
-  auto tile  = cg::tiled_partition<chainhashtable::cg_tile_size>(block);
-  func task;
-  task.init(tile.thread_rank() == 0);
+  auto tile  = cg::tiled_partition<hashtable::cg_tile_size>(block);
+  task.init(tile);
   table.cooperative_traverse_nodes(task, tile);
-  task.fini();
+  task.fini(tile);
 }
 
-} // namespace GpuChainHashtable
+} // namespace GpuHashtable
 
 } // namespace kernel

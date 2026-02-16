@@ -1301,30 +1301,29 @@ struct gpu_masstree {
   }
 
   template <typename func>
-  void traverse_tree_nodes() {
-    kernel::GpuMasstree::traverse_tree_nodes_kernel<func><<<1, 32>>>(*this);
+  void traverse_tree_nodes(func task) {
+    kernel::GpuMasstree::traverse_tree_nodes_kernel<<<1, 32>>>(*this, task);
     cudaDeviceSynchronize();
   }
 
   struct print_node_task {
-    DEVICE_QUALIFIER void init(bool lead_lane) {}
+    template <typename tile_type>
+    DEVICE_QUALIFIER void init(const tile_type& tile) {}
     template <typename node_type, typename tile_type>
     DEVICE_QUALIFIER void exec(const node_type& node, const tile_type& tile, device_allocator_context_type& allocator) {
       node.print(allocator);
     }
-    DEVICE_QUALIFIER void fini() {}
+    template <typename tile_type>
+    DEVICE_QUALIFIER void fini(const tile_type& tile) {}
   };
   void print() {
-    traverse_tree_nodes<print_node_task>();
+    print_node_task task;
+    traverse_tree_nodes(task);
   }
 
   struct validate_tree_task {
-    DEVICE_QUALIFIER void init(bool lead_lane) {
-      lead_lane_ = lead_lane;
-      num_entries_ = 0;
-      num_nodes_ = 0;
-      num_suffix_nodes_ = 0;
-    }
+    template <typename tile_type>
+    DEVICE_QUALIFIER void init(const tile_type& tile) {}
     template <typename node_type, typename tile_type>
     DEVICE_QUALIFIER void exec(const node_type& node, const tile_type& tile, device_allocator_context_type& allocator) {
       uint32_t num_entries = 0;
@@ -1360,16 +1359,17 @@ struct gpu_masstree {
       num_entries_ += num_entries;
       num_nodes_++;
     }
-    DEVICE_QUALIFIER void fini() {
-      if (lead_lane_) {
+    template <typename tile_type>
+    DEVICE_QUALIFIER void fini(const tile_type& tile) {
+      if (tile.thread_rank() == 0) {
         printf("%lu entries, %lu nodes (+%lu suffix nodes) found\n", num_entries_, num_nodes_, num_suffix_nodes_);
       }
     }
-    bool lead_lane_;
-    uint64_t num_entries_, num_nodes_, num_suffix_nodes_;
+    uint64_t num_entries_ = 0, num_nodes_ = 0, num_suffix_nodes_ = 0;
   };
   void validate() {
-    traverse_tree_nodes<validate_tree_task>();
+    validate_tree_task task;
+    traverse_tree_nodes(task);
   }
 
  private:

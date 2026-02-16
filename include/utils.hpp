@@ -60,6 +60,10 @@ std::size_t get_cuda_buffer_size(const cudaLimit limit) {
   return cur_size;
 }
 
+__host__ __device__ static constexpr uint32_t constexpr_pow(uint32_t base, uint32_t exp) {
+  return (exp == 0) ? 1 : base * constexpr_pow(base, exp - 1);
+}
+
 };  // namespace utils
 
 namespace GpuBTree {
