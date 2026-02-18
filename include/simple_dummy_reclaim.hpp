@@ -21,7 +21,6 @@
 #include <host_allocators.hpp>
 #include <macros.hpp>
 #include <memory>
-#include <memory_utils.hpp>
 
 struct simple_dummy_reclaimer {
   using pointer_type = uint32_t;

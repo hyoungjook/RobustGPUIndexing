@@ -64,12 +64,30 @@ __host__ __device__ static constexpr uint32_t constexpr_pow(uint32_t base, uint3
   return (exp == 0) ? 1 : base * constexpr_pow(base, exp - 1);
 }
 
-};  // namespace utils
+namespace memory {
 
-namespace GpuBTree {
-template <typename tile_type, typename pair_type>
-DEVICE_QUALIFIER void print_hex(const tile_type& tile, const pair_type& pair) {
-  printf("node: rank: %i, pair{%#010x, %#010x}\n", tile, pair.first, pair.second);
+template <typename T, bool atomic>
+DEVICE_QUALIFIER T load(T* ptr) {
+  if constexpr (atomic) {
+    cuda::atomic_ref<T, cuda::thread_scope_device> ptr_ref(*ptr);
+    return ptr_ref.load(cuda::memory_order_relaxed);
+  }
+  else {
+    return *ptr;
+  }
 }
 
-};  // namespace GpuBTree
+template <typename T, bool atomic>
+DEVICE_QUALIFIER void store(T* ptr, T value) {
+  if constexpr (atomic) {
+    cuda::atomic_ref<T, cuda::thread_scope_device> ptr_ref(*ptr);
+    ptr_ref.store(value, cuda::memory_order_relaxed);
+  }
+  else {
+    *ptr = value;
+  }
+}
+
+}; // namespace memory
+
+};  // namespace utils

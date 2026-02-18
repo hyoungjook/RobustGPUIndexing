@@ -18,6 +18,7 @@
 #pragma once
 #include <host_allocators.hpp>
 #include <macros.hpp>
+#include <utils.hpp>
 #include <cstdint>
 #include <iostream>
 #include <memory>
@@ -157,7 +158,8 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
             buffer_size_per_active_block_ * blockIdx.x +
             (buffer_size_per_active_block_ / num_bags_) * cur_bag +
             num_in_gmem;
-        cuda_memory<pointer_type, cuda_memory_order::weak>::store(reclaimer_.announce_ + offset, address);
+        // atomic store is not required here b/c it's used by warps in the same block after block.sync()
+        reclaimer_.announce_[offset] = address;
       }
       else {
         auto offset = cur_bag * shmem_size_per_bag_ + num_in_bag;
@@ -171,7 +173,7 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
     block.sync();
     __threadfence();
 
-    auto cur_epoch = cuda_memory<size_type, cuda_memory_order::relaxed>::load(reclaimer_.current_epoch_);
+    auto cur_epoch = utils::memory::load<size_type, true>(reclaimer_.current_epoch_);
     if (try_update_global_announce(block, cur_epoch, critical_bit_mask_, 0)) {
       reclaim_and_switch_limbo_bag(block, allocator);
     }
@@ -203,7 +205,7 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
       if (tile.all(bag_empty)) { return; }
 
       // try announcing
-      auto cur_epoch = cuda_memory<size_type, cuda_memory_order::relaxed>::load(reclaimer_.current_epoch_);
+      auto cur_epoch = utils::memory::load<size_type, true>(reclaimer_.current_epoch_);
       if (try_update_global_announce(tile, cur_epoch, 0, 0)) {
         reclaim_and_switch_limbo_bag(tile, allocator);
       }
@@ -269,7 +271,7 @@ private:
       bool is_quiescent = true;
       bool is_epoch_up_to_date = true;
       if (i < num_active_blocks_) {
-        auto epoch = cuda_memory<size_type, cuda_memory_order::relaxed>::load(&reclaimer_.announce_[i]);
+        auto epoch = utils::memory::load<size_type, true>(reclaimer_.announce_ + i);
         is_quiescent = (epoch & critical_bit_mask_) == 0;
         is_epoch_up_to_date = ((epoch & ~critical_bit_mask_) == cur_epoch);
       }

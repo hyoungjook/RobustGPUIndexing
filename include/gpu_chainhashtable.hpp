@@ -333,11 +333,11 @@ struct gpu_chainhashtable {
       if (update_if_exists) {
         if (more_key) {
           suffix_if_found.update_value(value);
-          suffix_if_found.template store_head<cuda_memory_order::relaxed>();
+          suffix_if_found.template store_head<true>();
         }
         else {
           target_node.update(location_if_found, value);
-          target_node.template store<cuda_memory_order::relaxed>();
+          target_node.template store<true>();
         }
       }
       node_type::unlock(bucket_ptr_of(bucket_index), tile);
@@ -350,8 +350,8 @@ struct gpu_chainhashtable {
       auto suffix = suffix_type(
           reinterpret_cast<elem_type*>(allocator.address(to_insert)), to_insert, tile, allocator);
       static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
-      suffix.template create_from<cuda_memory_order::relaxed>(key + suffix_offset, key_length - suffix_offset, value);
-      suffix.template store_head<cuda_memory_order::relaxed>();
+      suffix.template create_from<true>(key + suffix_offset, key_length - suffix_offset, value);
+      suffix.template store_head<true>();
       __threadfence();
     }
     if (target_node.is_full()) {
@@ -359,7 +359,7 @@ struct gpu_chainhashtable {
       auto new_node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
       new_node.initialize_empty(false);
       new_node.insert(first_slice, to_insert, more_key);
-      new_node.template store<cuda_memory_order::relaxed>();
+      new_node.template store<true>();
       __threadfence();
       target_node.set_next_index(next_index);
       target_node.set_has_next();
@@ -367,7 +367,7 @@ struct gpu_chainhashtable {
     else { // !node.is_full()
       target_node.insert(first_slice, to_insert, more_key);
     }
-    target_node.template store<cuda_memory_order::relaxed>();
+    target_node.template store<true>();
     node_type::unlock(bucket_ptr_of(bucket_index), tile);
     return true;
   }
@@ -406,9 +406,9 @@ struct gpu_chainhashtable {
     }
     if (location_if_found >= 0) { // exists
       target_node.erase(location_if_found);
-      target_node.template store<cuda_memory_order::relaxed>();
+      target_node.template store<true>();
       if (more_key) {
-        suffix_if_found.template retire<cuda_memory_order::relaxed>(reclaimer);
+        suffix_if_found.template retire<true>(reclaimer);
       }
       node_type::unlock(bucket_ptr_of(bucket_index), tile);
       return true;
@@ -436,10 +436,9 @@ struct gpu_chainhashtable {
                                                                             device_allocator_context_type& allocator) {
     using node_type = hashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    static constexpr auto memory_order = concurrent ? cuda_memory_order::relaxed : cuda_memory_order::weak;
     auto node = node_type(bucket_ptr_of(bucket_index), tile);
     while (true) {
-      node.template load<memory_order>();
+      node.template load<concurrent>();
       uint32_t to_check = node.match_key_in_node(first_slice, more_key);
       if (more_key) {
         // if length > 1, compare suffixes
@@ -448,9 +447,9 @@ struct gpu_chainhashtable {
           auto suffix_index = node.get_value_from_location(cur_location);
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
-          suffix.template load_head<memory_order>();
+          suffix.template load_head<concurrent>();
           static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
-          if (suffix.template streq<memory_order>(key + suffix_offset, key_length - suffix_offset)) {
+          if (suffix.template streq<concurrent>(key + suffix_offset, key_length - suffix_offset)) {
             // found
             location_if_found = cur_location;
             suffix_if_found = suffix;
@@ -491,7 +490,7 @@ struct gpu_chainhashtable {
     using node_type = hashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     auto node = node_type(bucket_ptr_of(bucket_index), tile);
-    node.template load<cuda_memory_order::relaxed>();
+    node.template load<true>();
     bool current_node_store_deferred = false;
     while (true) {
       uint32_t to_check = node.match_key_in_node(first_slice, more_key);
@@ -502,9 +501,9 @@ struct gpu_chainhashtable {
           auto suffix_index = node.get_value_from_location(cur_location);
           auto suffix = suffix_type(
               reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
-          suffix.template load_head<cuda_memory_order::relaxed>();
+          suffix.template load_head<true>();
           static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
-          if (suffix.template streq<cuda_memory_order::relaxed>(key + suffix_offset, key_length - suffix_offset)) {
+          if (suffix.template streq<true>(key + suffix_offset, key_length - suffix_offset)) {
             // found
             location_if_found = cur_location;
             suffix_if_found = suffix;
@@ -524,14 +523,14 @@ struct gpu_chainhashtable {
         }
       }
       if (current_node_store_deferred) {
-        node.template store<cuda_memory_order::relaxed>();
+        node.template store<true>();
         current_node_store_deferred = false;
       }
       // done searching this node, move on to next
       if (!node.has_next()) { break; }
       auto next_index = node.get_next_index();
       auto next_node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-      next_node.template load<cuda_memory_order::relaxed>();
+      next_node.template load<true>();
       if (node.is_mergeable(next_node)) {
         node.merge(next_node);
         current_node_store_deferred = true;
@@ -644,12 +643,12 @@ struct gpu_chainhashtable {
     device_allocator_context_type allocator{allocator_, tile};
     for (size_type bucket_index = 0; bucket_index < num_buckets_; bucket_index++) {
       auto node = node_type(d_table_ + (bucket_size * bucket_index), tile);
-      node.template load<cuda_memory_order::weak>();
+      node.template load<false>();
       task.exec(node, bucket_index, tile, allocator);
       while (node.has_next()) {
         auto next_index = node.get_next_index();
         node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-        node.template load<cuda_memory_order::weak>();
+        node.template load<false>();
         task.exec(node, -1, tile, allocator);
       }
     }
@@ -696,7 +695,7 @@ struct gpu_chainhashtable {
           auto suffix_index = node.get_value_from_location(i);
           auto suffix = suffix_node<tile_type, device_allocator_context_type>(
               reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
-          suffix.template load_head<cuda_memory_order::weak>();
+          suffix.template load_head<false>();
           num_suffix_nodes_ += suffix.get_num_nodes();
         }
       }
@@ -736,7 +735,7 @@ struct gpu_chainhashtable {
     using node_type = hashtable_node<tile_type>;
     auto node = node_type(d_table_ + (bucket_index * bucket_size), tile);
     node.initialize_empty(true);
-    node.template store<cuda_memory_order::weak>();
+    node.template store<false>();
   }
 
   void allocate() {

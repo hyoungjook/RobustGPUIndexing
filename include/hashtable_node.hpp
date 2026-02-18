@@ -18,7 +18,6 @@
 #pragma once
 #include <cstdint>
 #include <macros.hpp>
-#include <memory_utils.hpp>
 #include <utils.hpp>
 #include <suffix.hpp>
 
@@ -48,14 +47,14 @@ struct hashtable_node {
     write_metadata_to_registers();
   }
 
-  template <cuda_memory_order order>
+  template <bool atomic>
   DEVICE_QUALIFIER void load() {
-    lane_elem_ = cuda_memory<elem_type, order>::load(node_ptr_ + tile_.thread_rank());
+    lane_elem_ = utils::memory::load<elem_type, atomic>(node_ptr_ + tile_.thread_rank());
     read_metadata_from_registers();
   }
-  template <cuda_memory_order order>
+  template <bool atomic>
   DEVICE_QUALIFIER void store() {
-    cuda_memory<elem_type, order>::store(node_ptr_ + tile_.thread_rank(), lane_elem_);
+    utils::memory::store<elem_type, atomic>(node_ptr_ + tile_.thread_rank(), lane_elem_);
   }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {
@@ -132,7 +131,7 @@ struct hashtable_node {
   static DEVICE_QUALIFIER bool is_locked(elem_type* bucket_ptr, const tile_type& tile) {
     elem_type metadata;
     if (tile.thread_rank() == metadata_lane_) {
-      metadata = cuda_memory<elem_type, cuda_memory_order::relaxed>::load(bucket_ptr + metadata_lane_);
+      metadata = utils::memory::load<elem_type, true>(bucket_ptr + metadata_lane_);
     }
     metadata = tile.shfl(metadata, metadata_lane_);
     return static_cast<bool>(metadata & lock_bit_mask_);
@@ -282,7 +281,7 @@ struct hashtable_node {
         elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
         auto suffix = suffix_node<tile_type, allocator_type>(
             reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
-        suffix.template load_head<cuda_memory_order::weak>();
+        suffix.template load_head<false>();
         suffix.print();
       }
     }

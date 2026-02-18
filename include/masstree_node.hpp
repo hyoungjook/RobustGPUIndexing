@@ -18,7 +18,6 @@
 #pragma once
 #include <cstdint>
 #include <macros.hpp>
-#include <memory_utils.hpp>
 #include <utils.hpp>
 #include <suffix.hpp>
 
@@ -66,14 +65,14 @@ struct masstree_node {
     write_metadata_to_registers();
   }
 
-  template <cuda_memory_order order>
+  template <bool atomic>
   DEVICE_QUALIFIER void load() {
-    lane_elem_ = cuda_memory<elem_type, order>::load(node_ptr_ + tile_.thread_rank());
+    lane_elem_ = utils::memory::load<elem_type, atomic>(node_ptr_ + tile_.thread_rank());
     read_metadata_from_registers();
   }
-  template <cuda_memory_order order>
+  template <bool atomic>
   DEVICE_QUALIFIER void store() {
-    cuda_memory<elem_type, order>::store(node_ptr_ + tile_.thread_rank(), lane_elem_);
+    utils::memory::store<elem_type, atomic>(node_ptr_ + tile_.thread_rank(), lane_elem_);
   }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {
@@ -279,7 +278,7 @@ struct masstree_node {
   DEVICE_QUALIFIER bool cmp_key(const key_type& k1, bool morekey1, const key_type& k2, bool morekey2) const {
     return (k1 < k2) || ((k1 == k2) && (static_cast<int>(morekey1) <= static_cast<int>(morekey2)));
   }
-  template <bool use_upper_key, cuda_memory_order order, typename allocator_type>
+  template <bool use_upper_key, bool atomic, typename allocator_type>
   DEVICE_QUALIFIER uint32_t scan(const key_type& lower_key_slice,
                                  const bool lower_key_more,
                                  const key_type* lower_key,         // original argument
@@ -322,8 +321,8 @@ struct masstree_node {
       if (same_slice && first_keystate == KEYSTATE_SUFFIX) {
         auto suffix_index = get_value_from_location(first_location);
         auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
-        suffix.template load_head<order>();
-        if (suffix.template strcmp<order>(lower_key + layer + 1, lower_key_length - layer - 1) > 0) {
+        suffix.template load_head<atomic>();
+        if (suffix.template strcmp<atomic>(lower_key + layer + 1, lower_key_length - layer - 1) > 0) {
           if (tile_.thread_rank() == first_location) { in_range = false; }
           in_range_ballot = tile_.ballot(in_range);
           if (in_range_ballot == 0) {
@@ -347,8 +346,8 @@ struct masstree_node {
           get_keystate_from_location(last_location - 1) == KEYSTATE_SUFFIX) {
         auto suffix_index = get_value_from_location(last_location - 1);
         auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
-        suffix.template load_head<order>();
-        if (suffix.template strcmp<order>(upper_key + layer + 1, upper_key_length - layer - 1) < 0) {
+        suffix.template load_head<atomic>();
+        if (suffix.template strcmp<atomic>(upper_key + layer + 1, upper_key_length - layer - 1) < 0) {
           last_location--;
         }
       }
@@ -369,7 +368,7 @@ struct masstree_node {
         if (in_range) {
           out_value[tile_.thread_rank() - first_location] =
             (keystate_ != KEYSTATE_SUFFIX) ? values_to_key_lanes :
-              suffix_type::fetch_value_only<order>(values_to_key_lanes, allocator);
+              suffix_type::fetch_value_only<atomic>(values_to_key_lanes, allocator);
         }
       }
       if (out_key_lengths) {
@@ -377,7 +376,7 @@ struct masstree_node {
         if (in_range) {
           out_key_lengths[tile_.thread_rank() - first_location] =
             layer + 1 + ((keystate_ != KEYSTATE_SUFFIX) ? 0 :
-              suffix_type::fetch_length_only<order>(values_to_key_lanes, allocator));
+              suffix_type::fetch_length_only<atomic>(values_to_key_lanes, allocator));
         }
       }
       if (out_keys) {
@@ -392,8 +391,8 @@ struct masstree_node {
           auto cur_location = __ffs(flush_queue) - 1;
           auto suffix_index = get_value_from_location(cur_location);
           auto suffix = suffix_type(reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
-          suffix.template load_head<order>();
-          suffix.template flush<order>(out_keys + ((cur_location - first_location) * out_key_max_length + layer + 1));
+          suffix.template load_head<atomic>();
+          suffix.template flush<atomic>(out_keys + ((cur_location - first_location) * out_key_max_length + layer + 1));
           if (tile_.thread_rank() == cur_location) { to_flush = false; }
           flush_queue = tile_.ballot(to_flush);
         }
@@ -864,7 +863,7 @@ struct masstree_node {
         elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
         auto suffix = suffix_node<tile_type, allocator_type>(
             reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
-        suffix.template load_head<cuda_memory_order::weak>();
+        suffix.template load_head<false>();
         suffix.print();
       }
     }
