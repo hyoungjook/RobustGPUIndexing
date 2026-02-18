@@ -17,7 +17,6 @@
 #pragma once
 #include <cstdint>
 #include <macros.hpp>
-#include <memory_utils.hpp>
 #include <utils.hpp>
 
 template <typename tile_type, typename allocator_type>
@@ -31,14 +30,15 @@ struct suffix_node {
       , node_index_(index)
       , tile_(tile)
       , allocator_(allocator) {}
-
-  template <cuda_memory_order order>
+  
+  // ALL suffix loads/stores in this file are done as non-atomic, because
+  //  - suffix loads are done with the pointer in tree/bucket node, which is loaded with memory_order_acquire
+  //  - suffix stores are protected by tree/bucket node's locks, which includes threadfence with memory_order_release
   DEVICE_QUALIFIER void load_head() {
-    lane_elem_ = cuda_memory<elem_type, order>::load(node_ptr_ + tile_.thread_rank());
+    lane_elem_ = utils::memory::load<elem_type, false>(node_ptr_ + tile_.thread_rank());
   }
-  template <cuda_memory_order order>
   DEVICE_QUALIFIER void store_head() {
-    cuda_memory<elem_type, order>::store(node_ptr_ + tile_.thread_rank(), lane_elem_);
+    utils::memory::store<elem_type, false>(node_ptr_ + tile_.thread_rank(), lane_elem_);
   }
 
   DEVICE_QUALIFIER size_type get_node_index() const {
@@ -71,7 +71,6 @@ struct suffix_node {
     return ((length + 2) + node_max_len_ - 1) / node_max_len_;
   }
 
-  template <cuda_memory_order order>
   DEVICE_QUALIFIER bool streq(const elem_type* key, uint32_t key_length) const {
     if (get_key_length() != key_length) { return false; }
     // ignore first two elements in head
@@ -92,13 +91,12 @@ struct suffix_node {
       key += node_max_len_;
       auto next_index = tile_.shfl(elem, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
-      elem = cuda_memory<elem_type, order>::load(next_ptr + tile_.thread_rank());
+      elem = utils::memory::load<elem_type, false>(next_ptr + tile_.thread_rank());
       skip_elems = 0;
     }
     assert(false);
   }
 
-  template <cuda_memory_order order>
   DEVICE_QUALIFIER int strcmp(const elem_type* key, uint32_t key_length, elem_type* mismatch_value = nullptr) const {
     // strcmp(this, key) -> 0 (match), +(this<key), -(this>key)
     // the absolute of return value: (1 + num_matches)
@@ -143,13 +141,13 @@ struct suffix_node {
       key += node_max_len_;
       auto next_index = tile_.shfl(elem, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
-      elem = cuda_memory<elem_type, order>::load(next_ptr + tile_.thread_rank());
+      elem = utils::memory::load<elem_type, false>(next_ptr + tile_.thread_rank());
       skip_elems = 0;
     }
     assert(false);
   }
 
-  template <uint32_t prime0, uint32_t prime1, cuda_memory_order order>
+  template <uint32_t prime0, uint32_t prime1>
   DEVICE_QUALIFIER uint2 compute_polynomial() const {
     // compute (1 * s[0]) + (p * s[1]) + (p^2 * s[2]) + ... + (p^(l-1) * s[l-1])
     // 1. exponent = [1, p, p^2, ..., p^31]
@@ -193,7 +191,7 @@ struct suffix_node {
       this_length -= node_max_len_;
       auto next_index = tile_.shfl(elem, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
-      elem = cuda_memory<elem_type, order>::load(next_ptr + tile_.thread_rank());
+      elem = utils::memory::load<elem_type, false>(next_ptr + tile_.thread_rank());
       if (skip_elems <= tile_.thread_rank()) {
         exponent0 *= prime0_multiplier;
         exponent1 *= prime1_multiplier;
@@ -208,7 +206,6 @@ struct suffix_node {
     return make_uint2(tile_.shfl(hash, 0), tile_.shfl(hash1, 0));
   }
 
-  template <cuda_memory_order order>
   DEVICE_QUALIFIER void create_from(const elem_type* key, size_type key_length, elem_type value) {
     // head node metadata
     elem_type elem;
@@ -232,7 +229,7 @@ struct suffix_node {
       }
       // store
       if (curr_ptr) { // !is_head
-        cuda_memory<elem_type, order>::store(curr_ptr + tile_.thread_rank(), elem);
+        utils::memory::store<elem_type, false>(curr_ptr + tile_.thread_rank(), elem);
       }
       else {  // is_head
         lane_elem_ = elem;
@@ -246,7 +243,6 @@ struct suffix_node {
     }
   }
 
-  template <cuda_memory_order order>
   DEVICE_QUALIFIER void flush(elem_type* key_buffer) {
     auto this_length = get_key_length();
     auto elem = lane_elem_;
@@ -264,12 +260,12 @@ struct suffix_node {
       key_buffer += count;
       auto next_index = tile_.shfl(elem, next_lane_);
       auto* next_ptr = reinterpret_cast<elem_type*>(allocator_.address(next_index));
-      elem = cuda_memory<elem_type, order>::load(next_ptr + tile_.thread_rank());
+      elem = utils::memory::load<elem_type, false>(next_ptr + tile_.thread_rank());
       skip_elems = 0;
     }
   }
 
-  template <cuda_memory_order order, typename reclaimer_type>
+  template <typename reclaimer_type>
   DEVICE_QUALIFIER void move_from(suffix_node<tile_type, allocator_type>& src,
                                   uint32_t offset,
                                   reclaimer_type& reclaimer) {
@@ -281,7 +277,7 @@ struct suffix_node {
     while (offset >= node_max_len_) {
       src.node_index_ = src.get_next();
       src.node_ptr_ = reinterpret_cast<elem_type*>(allocator_.address(src.node_index_));
-      src.template load_head<order>();
+      src.load_head();
       reclaimer.retire(src.node_index_, tile_);
       offset -= node_max_len_;
     }
@@ -303,7 +299,7 @@ struct suffix_node {
       // phase 2. copy src.next[0:offset) -> dst[node_max_len-offset:node_max_len)
       src.node_index_ = src.get_next();
       src.node_ptr_ = reinterpret_cast<elem_type*>(allocator_.address(src.node_index_));
-      src.template load_head<order>();
+      src.load_head();
       reclaimer.retire(src.node_index_, tile_);
       if (offset > 0) {
         copy_count = min(new_length, offset);
@@ -322,7 +318,7 @@ struct suffix_node {
         dst_lane_elem = dst_index;
       }
       if (dst_ptr) {
-        cuda_memory<elem_type, order>::store(dst_ptr + tile_.thread_rank(), dst_lane_elem);
+        utils::memory::store<elem_type, false>(dst_ptr + tile_.thread_rank(), dst_lane_elem);
       }
       else {
         lane_elem_ = dst_lane_elem;
@@ -331,7 +327,7 @@ struct suffix_node {
     }
     // flush dst_lane_elem
     if (dst_ptr) {
-      cuda_memory<elem_type, order>::store(dst_ptr + tile_.thread_rank(), dst_lane_elem);
+      utils::memory::store<elem_type, false>(dst_ptr + tile_.thread_rank(), dst_lane_elem);
     }
     else {
       if (tile_.thread_rank() < node_max_len_ || tile_.thread_rank() == next_lane_) {
@@ -340,30 +336,28 @@ struct suffix_node {
     }
   }
 
-  template <cuda_memory_order order, typename reclaimer_type>
+  template <typename reclaimer_type>
   DEVICE_QUALIFIER void retire(reclaimer_type& reclaimer) {
     reclaimer.retire(node_index_, tile_);
     auto num_nodes = get_num_nodes() - 1;
     auto suffix_index = get_next();
     while (num_nodes > 0) {
       auto* suffix_ptr = reinterpret_cast<elem_type*>(allocator_.address(suffix_index));
-      auto next_index = cuda_memory<elem_type, order>::load(suffix_ptr + next_lane_);
+      auto next_index = utils::memory::load<elem_type, false>(suffix_ptr + next_lane_);
       reclaimer.retire(suffix_index, tile_);
       suffix_index = next_index;
       num_nodes--;
     }
   }
 
-  template <cuda_memory_order order>
   static DEVICE_QUALIFIER elem_type fetch_value_only(size_type suffix_index, allocator_type& allocator) {
     auto* ptr = reinterpret_cast<elem_type*>(allocator.address(suffix_index));
-    return cuda_memory<elem_type, order>::load(ptr + head_node_value_lane_);
+    return utils::memory::load<elem_type, false>(ptr + head_node_value_lane_);
   }
 
-  template <cuda_memory_order order>
   static DEVICE_QUALIFIER elem_type fetch_length_only(size_type suffix_index, allocator_type& allocator) {
     auto* ptr = reinterpret_cast<elem_type*>(allocator.address(suffix_index));
-    return cuda_memory<elem_type, order>::load(ptr + head_node_length_lane_);
+    return utils::memory::load<elem_type, false>(ptr + head_node_length_lane_);
   }
 
   DEVICE_QUALIFIER suffix_node<tile_type, allocator_type>& operator=(

@@ -18,6 +18,7 @@
 #pragma once
 #include <host_allocators.hpp>
 #include <macros.hpp>
+#include <utils.hpp>
 #include <cstdint>
 #include <iostream>
 #include <memory>
@@ -157,7 +158,8 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
             buffer_size_per_active_block_ * blockIdx.x +
             (buffer_size_per_active_block_ / num_bags_) * cur_bag +
             num_in_gmem;
-        cuda_memory<pointer_type, cuda_memory_order::weak>::store(reclaimer_.announce_ + offset, address);
+        // atomic store is not required here b/c it's used by warps in the same block after block.sync()
+        reclaimer_.announce_[offset] = address;
       }
       else {
         auto offset = cur_bag * shmem_size_per_bag_ + num_in_bag;
@@ -169,9 +171,7 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
   template <typename block_type, typename allocator_type>
   DEVICE_QUALIFIER void begin_critical_section(const block_type& block, allocator_type& allocator) {
     block.sync();
-    __threadfence();
-
-    auto cur_epoch = cuda_memory<size_type, cuda_memory_order::relaxed>::load(reclaimer_.current_epoch_);
+    size_type cur_epoch;
     if (try_update_global_announce(block, cur_epoch, critical_bit_mask_, 0)) {
       reclaim_and_switch_limbo_bag(block, allocator);
     }
@@ -183,10 +183,10 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
     // unset critical bit in global memory announce array
     block.sync();
     if (block.thread_rank() == 0) {
-      atomicAnd(reclaimer_.announce_ + blockIdx.x, ~critical_bit_mask_);
+      cuda::atomic_ref<size_type, cuda::thread_scope_device> announce_ref(reclaimer_.announce_[blockIdx.x]);
+      announce_ref.fetch_and(~critical_bit_mask_, cuda::memory_order_release);
     }
     block.sync();
-    __threadfence();
   }
 
   template <typename block_type, typename tile_type, typename allocator_type>
@@ -203,7 +203,7 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
       if (tile.all(bag_empty)) { return; }
 
       // try announcing
-      auto cur_epoch = cuda_memory<size_type, cuda_memory_order::relaxed>::load(reclaimer_.current_epoch_);
+      size_type cur_epoch;
       if (try_update_global_announce(tile, cur_epoch, 0, 0)) {
         reclaim_and_switch_limbo_bag(tile, allocator);
       }
@@ -213,10 +213,13 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
 
 private:
   template <typename tile_type>
-  DEVICE_QUALIFIER bool try_update_global_announce(const tile_type& tile, size_type cur_epoch, size_type new_mask, size_type old_mask) {
+  DEVICE_QUALIFIER bool try_update_global_announce(const tile_type& tile, size_type& cur_epoch, size_type new_mask, size_type old_mask) {
     bool epoch_advanced = false;
     if (tile.thread_rank() == 0) {
-      auto old_epoch = atomicExch(reclaimer_.announce_ + blockIdx.x, cur_epoch | new_mask);
+      cuda::atomic_ref<size_type, cuda::thread_scope_device> cur_epoch_ref(*reclaimer_.current_epoch_);
+      cur_epoch = cur_epoch_ref.load(cuda::memory_order_acquire);
+      cuda::atomic_ref<size_type, cuda::thread_scope_device> announce_ref(reclaimer_.announce_[blockIdx.x]);
+      auto old_epoch = announce_ref.exchange(cur_epoch | new_mask, cuda::memory_order_acquire);
       assert((old_epoch & critical_bit_mask_) == old_mask);
       if ((old_epoch & ~old_mask) != cur_epoch) {
         epoch_advanced = true;
@@ -269,7 +272,7 @@ private:
       bool is_quiescent = true;
       bool is_epoch_up_to_date = true;
       if (i < num_active_blocks_) {
-        auto epoch = cuda_memory<size_type, cuda_memory_order::relaxed>::load(&reclaimer_.announce_[i]);
+        auto epoch = utils::memory::load<size_type, true>(reclaimer_.announce_ + i);
         is_quiescent = (epoch & critical_bit_mask_) == 0;
         is_epoch_up_to_date = ((epoch & ~critical_bit_mask_) == cur_epoch);
       }
@@ -277,7 +280,10 @@ private:
       if (!tile.all(advanced)) { return; }
     }
     if (tile.thread_rank() == 0) {
-      atomicCAS(reclaimer_.current_epoch_, cur_epoch, cur_epoch + 2);
+      cuda::atomic_ref<size_type, cuda::thread_scope_device> cur_epoch_ref(*reclaimer_.current_epoch_);
+      cur_epoch_ref.compare_exchange_strong(cur_epoch, cur_epoch + 2,
+                                            cuda::memory_order_release,
+                                            cuda::memory_order_relaxed);
     }
   }
 

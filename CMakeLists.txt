@@ -57,14 +57,9 @@ set(CUDA_FLAGS
     )
 
 
-set(external_includes "${CMAKE_CURRENT_SOURCE_DIR}/external")
-set(rapidjson_includes "${rapidjson_SOURCE_DIR}/include")
 set(btree_includes "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 add_library(developer_flags INTERFACE)
-target_include_directories( developer_flags
-                            INTERFACE ${external_includes}
-                            INTERFACE ${rapidjson_includes})
 target_compile_options(developer_flags INTERFACE
     $<$<COMPILE_LANGUAGE:CXX>:${CXX_FLAGS}>
     $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_FLAGS}>)
@@ -87,16 +82,12 @@ set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT concurrent_insert_rq_vtree)
 # set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT reclaimation_test)
 #set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT test_slab_alloc)
 
-file(TO_NATIVE_PATH ${external_includes} external_includes_native)
 file(TO_NATIVE_PATH ${btree_includes} btree_includes_native)
-file(TO_NATIVE_PATH ${rapidjson_includes} rapidjson_includes_native)
 
 set(CMAKE_VS_SDK_INCLUDE_DIRECTORIES
     $(VC_IncludePath)
     $(WindowsSDK_IncludePath)
-    ${external_includes_native}
     ${btree_includes_native}
-    ${rapidjson_includes_native}
     )
 
 

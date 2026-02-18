@@ -18,7 +18,6 @@
 #pragma once
 #include <cstdint>
 #include <macros.hpp>
-#include <memory_utils.hpp>
 #include <utils.hpp>
 #include <suffix.hpp>
 
@@ -48,14 +47,18 @@ struct hashtable_node {
     write_metadata_to_registers();
   }
 
-  template <cuda_memory_order order>
+  template <bool atomic, bool acquire = true>
   DEVICE_QUALIFIER void load() {
-    lane_elem_ = cuda_memory<elem_type, order>::load(node_ptr_ + tile_.thread_rank());
+    if constexpr (atomic) { tile_.sync(); }
+    lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr_ + tile_.thread_rank());
+    if constexpr (atomic) { tile_.sync(); }
     read_metadata_from_registers();
   }
-  template <cuda_memory_order order>
+  template <bool atomic, bool release = true>
   DEVICE_QUALIFIER void store() {
-    cuda_memory<elem_type, order>::store(node_ptr_ + tile_.thread_rank(), lane_elem_);
+    if constexpr (atomic) { tile_.sync(); }
+    utils::memory::store<elem_type, atomic, release>(node_ptr_ + tile_.thread_rank(), lane_elem_);
+    if constexpr (atomic) { tile_.sync(); }
   }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {
@@ -130,22 +133,18 @@ struct hashtable_node {
 
   DEVICE_QUALIFIER elem_type* get_node_ptr() const { return node_ptr_; }
   static DEVICE_QUALIFIER bool is_locked(elem_type* bucket_ptr, const tile_type& tile) {
-    elem_type metadata;
-    if (tile.thread_rank() == metadata_lane_) {
-      metadata = cuda_memory<elem_type, cuda_memory_order::relaxed>::load(bucket_ptr + metadata_lane_);
-    }
-    metadata = tile.shfl(metadata, metadata_lane_);
+    auto metadata = utils::memory::load<elem_type, true>(bucket_ptr + metadata_lane_);
     return static_cast<bool>(metadata & lock_bit_mask_);
   }
   static DEVICE_QUALIFIER bool try_lock(elem_type* bucket_ptr, const tile_type& tile) {
     elem_type old;
     if (tile.thread_rank() == metadata_lane_) {
-      old = atomicOr(reinterpret_cast<elem_type*>(&bucket_ptr[metadata_lane_]),
-                     static_cast<elem_type>(lock_bit_mask_));
+      cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_]);
+      old = metadata_ref.fetch_or(lock_bit_mask_, cuda::memory_order_relaxed);
     }
     old = tile.shfl(old, metadata_lane_);
     bool is_locked = (old & lock_bit_mask_) == 0; // if previously not locked, now it's locked
-    if (is_locked) { __threadfence(); }
+    if (is_locked) { cuda::atomic_thread_fence(cuda::memory_order_acquire, cuda::thread_scope_device); }
     return is_locked;
   }
   static DEVICE_QUALIFIER void lock(elem_type* bucket_ptr, const tile_type& tile) {
@@ -153,10 +152,9 @@ struct hashtable_node {
   }
   static DEVICE_QUALIFIER void unlock(elem_type* bucket_ptr, const tile_type& tile) {
     // unlock, only using the pointer, not load the entire register
-    __threadfence();
     if (tile.thread_rank() == metadata_lane_) {
-      atomicAnd(reinterpret_cast<elem_type*>(&bucket_ptr[metadata_lane_]),
-                static_cast<elem_type>(~lock_bit_mask_));
+      cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_]);
+      metadata_ref.fetch_and(~lock_bit_mask_, cuda::memory_order_release);
     }
   }
 
@@ -267,6 +265,7 @@ struct hashtable_node {
       bool suffix_bit = get_suffix_of_location(i);
       if (lead_lane) printf("(%u %u %s) ", key, value, suffix_bit ? "s" : "$");
     }
+    if (lead_lane) printf("%s ", (metadata_ & lock_bit_mask_) ? "locked" : "free");
     elem_type next_index = get_next_index();
     if (has_next()) {
       if (lead_lane) printf("next(%u)", next_index);
@@ -281,7 +280,7 @@ struct hashtable_node {
         elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
         auto suffix = suffix_node<tile_type, allocator_type>(
             reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile_, allocator);
-        suffix.template load_head<cuda_memory_order::weak>();
+        suffix.load_head();
         suffix.print();
       }
     }
