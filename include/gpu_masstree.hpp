@@ -268,6 +268,37 @@ struct gpu_masstree {
     #undef erase_args
   }
 
+  void test_concurrent_insert_find(const key_slice_type* insert_keys,
+                                   const size_type* insert_key_lengths,
+                                   const value_type* insert_values,
+                                   const size_type insert_num_keys,
+                                   const key_slice_type* find_keys,
+                                   const size_type* find_key_lengths,
+                                   value_type* find_values,
+                                   const size_type find_num_keys,
+                                   const size_type max_key_length,
+                                   cudaStream_t stream = 0,
+                                   bool insert_update_if_exists = false,
+                                   bool enable_suffix = true) {
+    using insert_suffix = kernel::GpuMasstree::insert_device_func<true, key_slice_type, size_type, value_type>;
+    using insert_nosuffix = kernel::GpuMasstree::insert_device_func<false, key_slice_type, size_type, value_type>;
+    using find_concurrent = kernel::GpuMasstree::find_device_func<true, key_slice_type, size_type, value_type>;
+    #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
+    #define find_args .d_keys = find_keys, .max_key_length = max_key_length, .d_key_lengths = find_key_lengths, .d_values = find_values
+    if (enable_suffix) {
+      insert_suffix insert_func{insert_args};
+      find_concurrent find_func{find_args};
+      launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, find_func, find_num_keys, stream);
+    }
+    else {
+      insert_nosuffix insert_func{insert_args};
+      find_concurrent find_func{find_args};
+      launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, find_func, find_num_keys, stream);
+    }
+    #undef insert_args
+    #undef find_args
+  }
+
   // device-side APIs
   template <bool concurrent, typename tile_type>
   DEVICE_QUALIFIER value_type cooperative_find(const key_slice_type* key,

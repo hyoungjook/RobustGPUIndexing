@@ -267,6 +267,7 @@ struct hashtable_node {
       bool suffix_bit = get_suffix_of_location(i);
       if (lead_lane) printf("(%u %u %s) ", key, value, suffix_bit ? "s" : "$");
     }
+    if (lead_lane) printf("%s ", (metadata_ & lock_bit_mask_) ? "locked" : "free");
     elem_type next_index = get_next_index();
     if (has_next()) {
       if (lead_lane) printf("next(%u)", next_index);

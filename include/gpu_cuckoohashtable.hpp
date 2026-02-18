@@ -259,8 +259,8 @@ struct gpu_cuckoohashtable {
     key_slice_type first_slice = (use_hash_for_longkey && more_key) ?
         (hash.x + hash.y) : key[0];
     uint32_t table_i = ((hash.x ^ hash.y) * hash_prime2) % num_hfs; // 2-in-d cuckoo hashing
-    auto node0 = node_type(d_table_ + (bucket_size * ((hash.x % num_buckets_per_hf_) + (table_i * num_buckets_per_hf_))), tile);
-    auto node1 = node_type(d_table_ + (bucket_size * ((hash.y % num_buckets_per_hf_) + (((table_i + 1) % num_hfs) * num_buckets_per_hf_))), tile);
+    auto node0 = node_type(bucket_ptr_of(table_i, hash.x), tile);
+    auto node1 = node_type(bucket_ptr_of((table_i + 1) % num_hfs, hash.y), tile);
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
     size_type version;
@@ -305,8 +305,8 @@ struct gpu_cuckoohashtable {
     key_slice_type first_slice = (use_hash_for_longkey && more_key) ?
         (hash.x + hash.y) : key[0];
     uint32_t table_i = ((hash.x ^ hash.y) * hash_prime2) % num_hfs; // 2-in-d cuckoo hashing
-    auto node0 = node_type(d_table_ + (bucket_size * ((hash.x % num_buckets_per_hf_) + (table_i * num_buckets_per_hf_))), tile);
-    auto node1 = node_type(d_table_ + (bucket_size * ((hash.y % num_buckets_per_hf_) + (((table_i + 1) % num_hfs) * num_buckets_per_hf_))), tile);
+    auto node0 = node_type(bucket_ptr_of(table_i, hash.x), tile);
+    auto node1 = node_type(bucket_ptr_of((table_i + 1) % num_hfs, hash.y), tile);
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
     while (true) {
@@ -442,8 +442,8 @@ struct gpu_cuckoohashtable {
     key_slice_type first_slice = (use_hash_for_longkey && more_key) ?
         (hash.x + hash.y) : key[0];
     uint32_t table_i = ((hash.x ^ hash.y) * hash_prime2) % num_hfs; // 2-in-d cuckoo hashing
-    auto node0 = node_type(d_table_ + (bucket_size * ((hash.x % num_buckets_per_hf_) + (table_i * num_buckets_per_hf_))), tile);
-    auto node1 = node_type(d_table_ + (bucket_size * ((hash.y % num_buckets_per_hf_) + (((table_i + 1) % num_hfs) * num_buckets_per_hf_))), tile);
+    auto node0 = node_type(bucket_ptr_of(table_i, hash.x), tile);
+    auto node1 = node_type(bucket_ptr_of((table_i + 1) % num_hfs, hash.y), tile);
     // lock all nodes in order
     lock_two_nodes_in_order(node0, node1, tile);
     // check nodes
@@ -474,6 +474,10 @@ struct gpu_cuckoohashtable {
 
  private:
   // device-side helper functions
+  DEVICE_QUALIFIER elem_type* bucket_ptr_of(uint32_t table_i, size_type bucket_index) {
+    return d_table_ + (bucket_size * ((bucket_index % num_buckets_per_hf_) + (table_i * num_buckets_per_hf_)));
+  }
+
   template <bool concurrent, bool use_hash_for_longkey, typename tile_type>
   DEVICE_QUALIFIER int coop_get_key_location_from_node(hashtable_node<tile_type>& node,
                                                        const key_slice_type& first_slice,
@@ -546,8 +550,7 @@ struct gpu_cuckoohashtable {
       target_table_i = (target_table_i + 1) % num_hfs;
       hash.x = hash.y;
     }
-    auto other_node = node_type(
-        d_table_ + (bucket_size * ((hash.x % num_buckets_per_hf_) + (target_table_i * num_buckets_per_hf_))), tile);
+    auto other_node = node_type(bucket_ptr_of(target_table_i, hash.x), tile);
     other_node.template load<cuda_memory_order::relaxed>();
     return other_node;
   }

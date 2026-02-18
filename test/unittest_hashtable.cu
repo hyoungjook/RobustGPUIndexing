@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 #include <cmd.hpp>
 #include <cstdint>
+#include <random>
 
 std::size_t num_keys;
 float fill_factor;
@@ -130,6 +131,31 @@ struct testing_input {
     values.free();
     values2.free();
     keys_not_exist.free();
+  }
+  void shuffle() {
+    // decide order
+    std::vector<std::size_t> order(num_keys);
+    for (std::size_t i = 0; i < num_keys; i++) order[i] = i;
+    std::mt19937 rng(0);
+    std::shuffle(order.begin(), order.end(), rng);
+    // rearrange
+    mapped_vector<key_slice_type> sorted_keys(keys.size());
+    mapped_vector<size_type> sorted_lengths(lengths.size());
+    mapped_vector<value_type> sorted_values(values.size());
+    for (std::size_t i = 0; i < num_keys; i++) {
+      std::size_t old_i = order[i];
+      for (uint32_t s = 0; s < max_key_length; s++) {
+        sorted_keys[i * max_key_length + s] = keys[old_i * max_key_length + s];
+      }
+      sorted_lengths[i] = lengths[old_i];
+      sorted_values[i] = values[old_i];
+    }
+    keys.free();
+    lengths.free();
+    values.free();
+    keys = sorted_keys;
+    lengths = sorted_lengths;
+    values = sorted_values;
   }
 
   std::size_t num_keys;
@@ -346,6 +372,7 @@ void test_concurrentinserterase(map_type* map, uint32_t min_key_length_bytes, ui
   const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
   mapped_vector<value_type> find_results(num_keys);
   testing_input input(num_keys, min_key_length, max_key_length);
+  input.shuffle();
   // keys: [A: num_keys/3][B: num_keys/3][C: the rest]
   std::size_t num_keysetA = num_keys / 3, num_keysetB = num_keys / 3;
   std::size_t offset_keysetB = num_keysetA, offset_keysetC = num_keysetA + num_keysetB;
@@ -377,6 +404,7 @@ void test_concurrentinsertfind(map_type* map, uint32_t min_key_length_bytes, uin
   const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
   mapped_vector<value_type> find_results(num_keys);
   testing_input input(num_keys, min_key_length, max_key_length);
+  input.shuffle();
   // keys: [A: num_keys/2][B: num_keys/2]
   std::size_t num_keysetA = num_keys / 2;
   std::size_t offset_keysetB = num_keysetA;
