@@ -264,7 +264,6 @@ struct gpu_cuckoohashtable {
     suffix_type suffix_if_found(tile, allocator);
     size_type version;
     if constexpr (concurrent) {
-      tile.sync();
       version = utils::memory::load<size_type, true, true>(d_versions_ + ((first_slice * hash_prime2) % version_counter_size));
     }
     while (true) {
@@ -279,7 +278,6 @@ struct gpu_cuckoohashtable {
       TRY_GET_KEY_FROM_NODE(node1)
       #undef TRY_GET_KEY_FROM_NODE
       if constexpr (concurrent) {
-        tile.sync();
         auto new_version = utils::memory::load<size_type, true, true>(d_versions_ + ((first_slice * hash_prime2) % version_counter_size));
         if (version != new_version || (new_version % 2 != 0)) {
           version = new_version;

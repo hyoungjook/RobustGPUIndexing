@@ -51,12 +51,14 @@ struct hashtable_node {
   DEVICE_QUALIFIER void load() {
     if constexpr (atomic) { tile_.sync(); }
     lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr_ + tile_.thread_rank());
+    if constexpr (atomic) { tile_.sync(); }
     read_metadata_from_registers();
   }
   template <bool atomic, bool release = true>
   DEVICE_QUALIFIER void store() {
     if constexpr (atomic) { tile_.sync(); }
     utils::memory::store<elem_type, atomic, release>(node_ptr_ + tile_.thread_rank(), lane_elem_);
+    if constexpr (atomic) { tile_.sync(); }
   }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {
@@ -131,7 +133,6 @@ struct hashtable_node {
 
   DEVICE_QUALIFIER elem_type* get_node_ptr() const { return node_ptr_; }
   static DEVICE_QUALIFIER bool is_locked(elem_type* bucket_ptr, const tile_type& tile) {
-    tile.sync();
     auto metadata = utils::memory::load<elem_type, true>(bucket_ptr + metadata_lane_);
     return static_cast<bool>(metadata & lock_bit_mask_);
   }

@@ -69,12 +69,14 @@ struct masstree_node {
   DEVICE_QUALIFIER void load() {
     if constexpr (atomic) { tile_.sync(); }
     lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr_ + tile_.thread_rank());
+    if constexpr (atomic) { tile_.sync(); }
     read_metadata_from_registers();
   }
   template <bool atomic, bool release = true>
   DEVICE_QUALIFIER void store() {
     if constexpr (atomic) { tile_.sync(); }
     utils::memory::store<elem_type, atomic, release>(node_ptr_ + tile_.thread_rank(), lane_elem_);
+    if constexpr (atomic) { tile_.sync(); }
   }
   DEVICE_QUALIFIER void store_unlock() {
     assert(is_locked());
@@ -84,6 +86,7 @@ struct masstree_node {
     }
     tile_.sync();
     utils::memory::store<elem_type, true, true>(node_ptr_ + tile_.thread_rank(), lane_elem_);
+    tile_.sync();
   }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {
