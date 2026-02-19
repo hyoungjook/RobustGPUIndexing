@@ -526,13 +526,19 @@ struct gpu_linearhashtable {
       first_slice = key[0];
     }
     suffix_type suffix_if_found(tile, allocator);
-    size_type bucket_index = get_bucket_index(
-        bucket_index_hash, d_global_state_->template load_directory_size<true>());
+    size_type directory_size = d_global_state_->template load_directory_size<true>();
     while (true) {
+      size_type bucket_index = get_bucket_index(bucket_index_hash, directory_size);
       size_type head_index = utils::memory::load<size_type, true, true>(d_directory_ + bucket_index);
       auto node = node_type(head_index, tile, allocator);
       node_type::lock(head_index, tile, allocator);
       node.template load_from_allocator<true>();
+      if (node.is_garbage()) {
+        // this bucket just splitted by other thread; retry
+        node_type::unlock(head_index, tile, allocator);
+        directory_size = d_global_state_->template load_directory_size<true>();
+        continue;
+      }
       int location_if_found;
       if constexpr (do_merge) {
         location_if_found = coop_traverse_until_found_merge<use_hash_for_longkey>(
