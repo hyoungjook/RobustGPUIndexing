@@ -57,7 +57,7 @@ struct gpu_linearhashtable {
 
   // TODO adjust
   static constexpr size_type max_directory_size = 128 * 1024 * 1024; // 0.5GB
-  static constexpr size_type directory_delta = 1;
+  static constexpr size_type directory_delta = 128;
   static constexpr float load_factor_threshold = 1.0f;
 
   using host_allocator_type = Allocator;
@@ -428,8 +428,8 @@ struct gpu_linearhashtable {
           auto new_node1_index = allocator.allocate(tile);
           auto new_node0 = node_type(reinterpret_cast<elem_type*>(allocator.address(new_node0_index)), tile);
           auto new_node1 = node_type(reinterpret_cast<elem_type*>(allocator.address(new_node1_index)), tile);
-          new_node0.initialize_empty(local_depth + 1);
-          new_node1.initialize_empty(local_depth + 1);
+          new_node0.initialize_empty(local_depth + 1, true);
+          new_node1.initialize_empty(local_depth + 1, true);
           // split
           while (true) {
             for (uint32_t loc = 0; loc < node.num_keys(); loc++) {
@@ -486,11 +486,14 @@ struct gpu_linearhashtable {
           // publish new buckets: 
           auto local_depth_mask = (1u << local_depth);
           d_global_state_->lock(tile);
+          directory_size = d_global_state_->template load_directory_size<true>();
           for (size_type index = first_bucket_index; index < directory_size; index += local_depth_mask) {
             auto new_node_index = (index & local_depth_mask) == 0 ? new_node0_index : new_node1_index;
             utils::memory::store<size_type, true, true>(d_directory_ + index, new_node_index);
           }
           d_global_state_->unlock(tile);
+          node_type::unlock(reinterpret_cast<elem_type*>(allocator.address(new_node0_index)), tile);
+          node_type::unlock(reinterpret_cast<elem_type*>(allocator.address(new_node1_index)), tile);
         }
       }
       node_type::unlock(reinterpret_cast<elem_type*>(allocator.address(head_index)), tile);

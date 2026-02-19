@@ -35,25 +35,15 @@ struct hashtable_node {
   {
     assert(tile_.size() == 2 * node_width);
   }
-  DEVICE_QUALIFIER void initialize_empty() {
+  DEVICE_QUALIFIER void initialize_empty(size_type local_depth = 0, bool locked = false) {
     lane_elem_ = 0;
     metadata_ = (
       (0u << num_keys_offset_) |  // num_keys = 0;
-      (0u & lock_bit_mask_) |     // is_locked = false;
-      (0u & next_bit_mask_) |     // has_next = false;
-      (0u & garbage_bit_mask_)    // is_garbage = false;
-    );
-    write_metadata_to_registers();
-  }
-  DEVICE_QUALIFIER void initialize_empty(size_type local_depth) {
-    lane_elem_ = 0;
-    metadata_ = (
-      (0u << num_keys_offset_) |  // num_keys = 0;
-      (0u & lock_bit_mask_) |     // is_locked = false;
       (0u & next_bit_mask_) |     // has_next = false;
       (0u & garbage_bit_mask_)    // is_garbage = false;
     );
     metadata_ |= (local_depth << local_depth_bits_offset_);
+    if (locked) { metadata_ |= lock_bit_mask_; }
     write_metadata_to_registers();
   }
 
