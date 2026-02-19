@@ -38,7 +38,7 @@
 #include <simple_dummy_reclaim.hpp>
 #include <simple_debra_reclaim.hpp>
 
-namespace GpuHashtable {
+namespace GpuLinearHashtable {
 
 template <typename Allocator,
           typename Reclaimer>
@@ -346,9 +346,11 @@ struct gpu_linearhashtable {
         directory_size = d_global_state_->template load_directory_size<true>();
         auto new_directory_size = directory_size + directory_delta;
         size_type copy_from = 1u << (compute_global_depth(new_directory_size) - 1);
-        // copy pointers to new directory // TODO vectorize load/stores
-        for (size_type bucket = directory_size; bucket < new_directory_size; bucket++) {
-          d_directory_[bucket] = d_directory_[bucket - copy_from];
+        // copy pointers to new directory
+        for (size_type bucket = directory_size; bucket < new_directory_size; bucket += 32) {
+          if (bucket + tile.thread_rank() < new_directory_size) {
+            d_directory_[bucket + tile.thread_rank()] = d_directory_[bucket - copy_from + tile.thread_rank()];
+          }
         }
         // publish new directory
         directory_size = new_directory_size;
@@ -1057,4 +1059,4 @@ struct gpu_linearhashtable {
 
 };
 
-} // namespace GpuHashtable
+} // namespace GpuLinearHashtable
