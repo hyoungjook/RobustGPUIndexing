@@ -273,7 +273,7 @@ struct gpu_chainhashtable {
                                                size_type key_length,
                                                const tile_type& tile,
                                                device_allocator_context_type& allocator) {
-    using node_type = hashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     key_slice_type first_slice;
     size_type bucket_index;
@@ -287,16 +287,18 @@ struct gpu_chainhashtable {
       bucket_index = compute_hash(key, key_length, tile);
       first_slice = key[0];
     }
-    int location_if_found;
+    bucket_index %= num_buckets_;
     suffix_type suffix_if_found(tile, allocator);
-    auto target_node = coop_traverse_until_found<concurrent, use_hash_for_longkey>(
-        first_slice, more_key, key, key_length, bucket_index, location_if_found, suffix_if_found, tile, allocator);
+    auto node = node_type(bucket_index, tile, allocator);
+    node.template load_from_array<concurrent>(d_table_);
+    int location_if_found = coop_traverse_until_found<concurrent, use_hash_for_longkey>(
+        node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
     if (location_if_found >= 0) { // found
       if (more_key) {
         return suffix_if_found.get_value();
       }
       else {
-        return target_node.get_value_from_location(location_if_found);
+        return node.get_value_from_location(location_if_found);
       }
     }
     // not found
@@ -310,7 +312,7 @@ struct gpu_chainhashtable {
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,
                                            bool update_if_exists = false) {
-    using node_type = hashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     key_slice_type first_slice;
     size_type bucket_index;
@@ -324,11 +326,13 @@ struct gpu_chainhashtable {
       bucket_index = compute_hash(key, key_length, tile);
       first_slice = key[0];
     }
-    node_type::lock(bucket_ptr_of(bucket_index), tile);
-    int location_if_found;
+    bucket_index %= num_buckets_;
+    node_type::lock(d_table_, bucket_index, tile);
     suffix_type suffix_if_found(tile, allocator);
-    auto target_node = coop_traverse_until_found<true, use_hash_for_longkey>(
-        first_slice, more_key, key, key_length, bucket_index, location_if_found, suffix_if_found, tile, allocator);
+    auto node = node_type(bucket_index, tile, allocator);
+    node.template load_from_array<true>(d_table_);
+    int location_if_found = coop_traverse_until_found<true, use_hash_for_longkey>(
+        node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
     if (location_if_found >= 0) { // already exists
       if (update_if_exists) {
         if (more_key) {
@@ -336,38 +340,37 @@ struct gpu_chainhashtable {
           suffix_if_found.store_head();
         }
         else {
-          target_node.update(location_if_found, value);
-          target_node.template store<true>();
+          node.update(location_if_found, value);
+          node.template store_head_to_array_aux_to_allocator<true>(d_table_);
         }
       }
-      node_type::unlock(bucket_ptr_of(bucket_index), tile);
+      node_type::unlock(d_table_, bucket_index, tile);
       return update_if_exists;
     }
     // not exists
     value_type to_insert = value;
     if (more_key) {
       to_insert = allocator.allocate(tile);
-      auto suffix = suffix_type(
-          reinterpret_cast<elem_type*>(allocator.address(to_insert)), to_insert, tile, allocator);
+      auto suffix = suffix_type(to_insert, tile, allocator);
       static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
       suffix.create_from(key + suffix_offset, key_length - suffix_offset, value);
       suffix.store_head();
     }
-    if (target_node.is_full()) {
+    if (node.is_full()) {
       auto next_index = allocator.allocate(tile);
-      auto new_node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-      new_node.initialize_empty();
+      auto new_node = node_type(next_index, tile, allocator);
+      new_node.initialize_empty(false);
       new_node.insert(first_slice, to_insert, more_key);
-      // write order: new_node -> target_node
-      new_node.template store<true>();
-      target_node.set_next_index(next_index);
-      target_node.set_has_next();
+      // write order: new_node -> node
+      new_node.template store_to_allocator<true>();
+      node.set_next_index(next_index);
+      node.set_has_next();
     }
     else { // !node.is_full()
-      target_node.insert(first_slice, to_insert, more_key);
+      node.insert(first_slice, to_insert, more_key);
     }
-    target_node.template store<true>();
-    node_type::unlock(bucket_ptr_of(bucket_index), tile);
+    node.template store_head_to_array_aux_to_allocator<true>(d_table_);
+    node_type::unlock(d_table_, bucket_index, tile);
     return true;
   }
 
@@ -377,7 +380,7 @@ struct gpu_chainhashtable {
                                           const tile_type& tile,
                                           device_allocator_context_type& allocator,
                                           device_reclaimer_context_type& reclaimer) {
-    using node_type = hashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     key_slice_type first_slice;
     size_type bucket_index;
@@ -391,68 +394,61 @@ struct gpu_chainhashtable {
       bucket_index = compute_hash(key, key_length, tile);
       first_slice = key[0];
     }
-    node_type::lock(bucket_ptr_of(bucket_index), tile);
+    bucket_index %= num_buckets_;
+    node_type::lock(d_table_, bucket_index, tile);
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
-    node_type target_node(tile);
+    auto node = node_type(bucket_index, tile, allocator);
+    node.template load_from_array<true>(d_table_);
     if constexpr (do_merge) {
-      target_node = coop_traverse_until_found_merge<use_hash_for_longkey>(
-        first_slice, more_key, key, key_length, bucket_index, location_if_found, suffix_if_found, tile, allocator, reclaimer);
+      location_if_found = coop_traverse_until_found_merge<use_hash_for_longkey>(
+        node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, reclaimer);
     }
     else {
-      target_node = coop_traverse_until_found<true, use_hash_for_longkey>(
-        first_slice, more_key, key, key_length, bucket_index, location_if_found, suffix_if_found, tile, allocator);
+      location_if_found = coop_traverse_until_found<true, use_hash_for_longkey>(
+        node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
     }
     if (location_if_found >= 0) { // exists
-      target_node.erase(location_if_found);
-      target_node.template store<true>();
+      node.erase(location_if_found);
+      node.template store_head_to_array_aux_to_allocator<true>(d_table_);
       if (more_key) {
         suffix_if_found.retire(reclaimer);
       }
-      node_type::unlock(bucket_ptr_of(bucket_index), tile);
+      node_type::unlock(d_table_, bucket_index, tile);
       return true;
     }
     // not exists
-    node_type::unlock(bucket_ptr_of(bucket_index), tile);
+    node_type::unlock(d_table_, bucket_index, tile);
     return false;
   }
 
  private:
   // device-side helper functions
-  DEVICE_QUALIFIER elem_type* bucket_ptr_of(size_type bucket_index) const {
-    return d_table_ + (bucket_size * (bucket_index % num_buckets_));
-  }
-
   template <bool concurrent, bool use_hash_for_longkey, typename tile_type>
-  DEVICE_QUALIFIER hashtable_node<tile_type> coop_traverse_until_found(const key_slice_type& first_slice,
-                                                                            bool more_key,
-                                                                            const key_slice_type* key,
-                                                                            const size_type& key_length,
-                                                                            size_type bucket_index,
-                                                                            int& location_if_found,
-                                                                            suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
-                                                                            const tile_type& tile,
-                                                                            device_allocator_context_type& allocator) {
-    using node_type = hashtable_node<tile_type>;
+  DEVICE_QUALIFIER int coop_traverse_until_found(hashtable_node<tile_type, device_allocator_context_type>& node,
+                                                 const key_slice_type& first_slice,
+                                                 bool more_key,
+                                                 const key_slice_type* key,
+                                                 const size_type& key_length,
+                                                 suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
+                                                 const tile_type& tile,
+                                                 device_allocator_context_type& allocator) {
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    auto node = node_type(bucket_ptr_of(bucket_index), tile);
     while (true) {
-      node.template load<concurrent>();
       uint32_t to_check = node.match_key_in_node(first_slice, more_key);
       if (more_key) {
         // if length > 1, compare suffixes
         while (to_check != 0) {
           auto cur_location = __ffs(to_check) - 1;
           auto suffix_index = node.get_value_from_location(cur_location);
-          auto suffix = suffix_type(
-              reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
+          auto suffix = suffix_type(suffix_index, tile, allocator);
           suffix.load_head();
           static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
           if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
             // found
-            location_if_found = cur_location;
             suffix_if_found = suffix;
-            return node;
+            return cur_location;
           }
           to_check &= ~(1u << cur_location);
         }
@@ -461,35 +457,31 @@ struct gpu_chainhashtable {
         // if length == 1, match means match
         if (to_check != 0) {
           // found
-          location_if_found = __ffs(to_check) - 1;
-          return node;
+          return __ffs(to_check) - 1;
         }
       }
       // done searching this node, move on to next
       if (!node.has_next()) { break; }
       auto next_index = node.get_next_index();
-      node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
+      node = node_type(next_index, tile, allocator);
+      node.template load_from_allocator<concurrent>();
     }
     // not found until the end
-    location_if_found = -1;
-    return node;
+    return -1;
   }
 
   template <bool use_hash_for_longkey, typename tile_type>
-  DEVICE_QUALIFIER hashtable_node<tile_type> coop_traverse_until_found_merge(const key_slice_type& first_slice,
-                                                                                  bool more_key,
-                                                                                  const key_slice_type* key,
-                                                                                  const size_type& key_length,
-                                                                                  size_type bucket_index,
-                                                                                  int& location_if_found,
-                                                                                  suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
-                                                                                  const tile_type& tile,
-                                                                                  device_allocator_context_type& allocator,
-                                                                                  device_reclaimer_context_type& reclaimer) {
-    using node_type = hashtable_node<tile_type>;
+  DEVICE_QUALIFIER int coop_traverse_until_found_merge(hashtable_node<tile_type, device_allocator_context_type>& node,
+                                                       const key_slice_type& first_slice,
+                                                       bool more_key,
+                                                       const key_slice_type* key,
+                                                       const size_type& key_length,
+                                                       suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
+                                                       const tile_type& tile,
+                                                       device_allocator_context_type& allocator,
+                                                       device_reclaimer_context_type& reclaimer) {
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    auto node = node_type(bucket_ptr_of(bucket_index), tile);
-    node.template load<true>();
     bool current_node_store_deferred = false;
     while (true) {
       uint32_t to_check = node.match_key_in_node(first_slice, more_key);
@@ -498,16 +490,14 @@ struct gpu_chainhashtable {
         while (to_check != 0) {
           auto cur_location = __ffs(to_check) - 1;
           auto suffix_index = node.get_value_from_location(cur_location);
-          auto suffix = suffix_type(
-              reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
+          auto suffix = suffix_type(suffix_index, tile, allocator);
           suffix.load_head();
           static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
           if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
             // found
-            location_if_found = cur_location;
             suffix_if_found = suffix;
             // current_node_store_deferred: USER SHOULD STORE the node returned
-            return node;
+            return cur_location;
           }
           to_check &= ~(1u << cur_location);
         }
@@ -516,20 +506,19 @@ struct gpu_chainhashtable {
         // if length == 1, match means match
         if (to_check != 0) {
           // found
-          location_if_found = __ffs(to_check) - 1;
+          return __ffs(to_check) - 1;
           // current_node_store_deferred: USER SHOULD STORE the node returned
-          return node;
         }
       }
       if (current_node_store_deferred) {
-        node.template store<true>();
+        node.template store_head_to_array_aux_to_allocator<true>(d_table_);
         current_node_store_deferred = false;
       }
       // done searching this node, move on to next
       if (!node.has_next()) { break; }
       auto next_index = node.get_next_index();
-      auto next_node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-      next_node.template load<true>();
+      auto next_node = node_type(next_index, tile, allocator);
+      next_node.template load_from_allocator<true>();
       if (node.is_mergeable(next_node)) {
         node.merge(next_node);
         current_node_store_deferred = true;
@@ -540,8 +529,7 @@ struct gpu_chainhashtable {
       }
     }
     // not found until the end
-    location_if_found = -1;
-    return node;
+    return -1;
   }
 
   static constexpr uint32_t hash_prime0 = 0x9e3779b1;
@@ -555,7 +543,7 @@ struct gpu_chainhashtable {
     return hash;
   }
   template <typename tile_type>
-  DEVICE_QUALIFIER uint32_t compute_hash(const key_slice_type* key, size_type key_length, const tile_type& tile) {
+  static DEVICE_QUALIFIER uint32_t compute_hash(const key_slice_type* key, size_type key_length, const tile_type& tile) {
     // parallel polynomial rolling hash
     static constexpr uint32_t prime_multiplier = utils::constexpr_pow(hash_prime0, cg_tile_size);
     // 1. exponent = [1, p, p^2, ..., p^31]; parallel prefix product
@@ -589,7 +577,7 @@ struct gpu_chainhashtable {
     return tile.shfl(hash, 0);
   }
   template <typename tile_type>
-  DEVICE_QUALIFIER uint2 compute_hashx2(const key_slice_type* key, size_type key_length, const tile_type& tile) {
+  static DEVICE_QUALIFIER uint2 compute_hashx2(const key_slice_type* key, size_type key_length, const tile_type& tile) {
     static constexpr uint32_t prime0_multiplier = utils::constexpr_pow(hash_prime0, cg_tile_size);
     static constexpr uint32_t prime1_multiplier = utils::constexpr_pow(hash_prime1, cg_tile_size);
     // 1. exponent = [1, p, p^2, ..., p^31]; parallel prefix product
@@ -637,16 +625,16 @@ struct gpu_chainhashtable {
   DEVICE_QUALIFIER void cooperative_traverse_nodes(Func& task, const tile_type& tile) {
     // debug-purpose, so inefficient implementation
     // called with single warp
-    using node_type = hashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     device_allocator_context_type allocator{allocator_, tile};
     for (size_type bucket_index = 0; bucket_index < num_buckets_; bucket_index++) {
-      auto node = node_type(d_table_ + (bucket_size * bucket_index), tile);
-      node.template load<false>();
+      auto node = node_type(bucket_index, tile, allocator);
+      node.template load_from_array<false>(d_table_);
       task.exec(node, bucket_index, tile, allocator);
       while (node.has_next()) {
         auto next_index = node.get_next_index();
-        node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-        node.template load<false>();
+        node = node_type(next_index, tile, allocator);
+        node.template load_from_allocator<false>();
         task.exec(node, -1, tile, allocator);
       }
     }
@@ -691,8 +679,7 @@ struct gpu_chainhashtable {
         bool suffix_bit = node.get_suffix_of_location(i);
         if (suffix_bit) {
           auto suffix_index = node.get_value_from_location(i);
-          auto suffix = suffix_node<tile_type, device_allocator_context_type>(
-              reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
+          auto suffix = suffix_node<tile_type, device_allocator_context_type>(suffix_index, tile, allocator);
           suffix.load_head();
           num_suffix_nodes_ += suffix.get_num_nodes();
         }
@@ -729,11 +716,12 @@ struct gpu_chainhashtable {
  private:
   template <typename tile_type>
   DEVICE_QUALIFIER void initialize_bucket(size_type bucket_index,
-                                          const tile_type& tile) {
-    using node_type = hashtable_node<tile_type>;
-    auto node = node_type(d_table_ + (bucket_index * bucket_size), tile);
-    node.initialize_empty();
-    node.template store<false>();
+                                          const tile_type& tile,
+                                          device_allocator_context_type& allocator) {
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
+    auto node = node_type(bucket_index, tile, allocator);
+    node.initialize_empty(true);
+    node.template store_to_array<false>(d_table_);
   }
 
   void allocate() {

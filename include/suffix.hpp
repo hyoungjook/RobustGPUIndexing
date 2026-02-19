@@ -25,9 +25,8 @@ struct suffix_node {
   using size_type = uint32_t;
   static constexpr int node_width = 32;
   DEVICE_QUALIFIER suffix_node(const tile_type& tile, allocator_type& allocator): tile_(tile), allocator_(allocator) {}
-  DEVICE_QUALIFIER suffix_node(elem_type* ptr, const size_type index, const tile_type& tile, allocator_type& allocator)
-      : node_ptr_(ptr)
-      , node_index_(index)
+  DEVICE_QUALIFIER suffix_node(size_type index, const tile_type& tile, allocator_type& allocator)
+      : node_index_(index)
       , tile_(tile)
       , allocator_(allocator) {}
   
@@ -35,10 +34,12 @@ struct suffix_node {
   //  - suffix loads are done with the pointer in tree/bucket node, which is loaded with memory_order_acquire
   //  - suffix stores are protected by tree/bucket node's locks, which includes threadfence with memory_order_release
   DEVICE_QUALIFIER void load_head() {
-    lane_elem_ = utils::memory::load<elem_type, false>(node_ptr_ + tile_.thread_rank());
+    auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+    lane_elem_ = utils::memory::load<elem_type, false>(node_ptr + tile_.thread_rank());
   }
   DEVICE_QUALIFIER void store_head() {
-    utils::memory::store<elem_type, false>(node_ptr_ + tile_.thread_rank(), lane_elem_);
+    auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+    utils::memory::store<elem_type, false>(node_ptr + tile_.thread_rank(), lane_elem_);
   }
 
   DEVICE_QUALIFIER size_type get_node_index() const {
@@ -324,7 +325,6 @@ struct suffix_node {
     reclaimer.retire(src.get_node_index(), tile_);
     while (offset >= node_max_len_) {
       src.node_index_ = src.get_next();
-      src.node_ptr_ = reinterpret_cast<elem_type*>(allocator_.address(src.node_index_));
       src.load_head();
       reclaimer.retire(src.node_index_, tile_);
       offset -= node_max_len_;
@@ -346,7 +346,6 @@ struct suffix_node {
       if (new_length == 0) { break; }
       // phase 2. copy src.next[0:offset) -> dst[node_max_len-offset:node_max_len)
       src.node_index_ = src.get_next();
-      src.node_ptr_ = reinterpret_cast<elem_type*>(allocator_.address(src.node_index_));
       src.load_head();
       reclaimer.retire(src.node_index_, tile_);
       if (offset > 0) {
@@ -410,7 +409,6 @@ struct suffix_node {
 
   DEVICE_QUALIFIER suffix_node<tile_type, allocator_type>& operator=(
       const suffix_node<tile_type, allocator_type>& other) {
-    node_ptr_ = other.node_ptr_;
     node_index_ = other.node_index_;
     lane_elem_ = other.lane_elem_;
     return *this;
@@ -455,7 +453,6 @@ struct suffix_node {
   }
 
  private:
-  elem_type* node_ptr_;
   size_type node_index_;
   elem_type lane_elem_;
   const tile_type& tile_;

@@ -319,10 +319,12 @@ namespace GpuHashtable {
 
 template <typename hashtable>
 __global__ void initialize_kernel(hashtable table) {
+  using allocator_type = typename hashtable::device_allocator_context_type;
   auto block = cg::this_thread_block();
   auto tile  = cg::tiled_partition<hashtable::cg_tile_size>(block);
   auto bucket_index = blockIdx.x;
-  table.initialize_bucket(bucket_index, tile);
+  allocator_type allocator{table.allocator_, tile};
+  table.initialize_bucket(bucket_index, tile, allocator);
 }
 
 template <bool use_hash_for_longkey, typename key_slice_type, typename size_type, typename value_type>

@@ -267,7 +267,7 @@ struct gpu_linearhashtable {
                                                size_type key_length,
                                                const tile_type& tile,
                                                device_allocator_context_type& allocator) {
-    using node_type = hashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     key_slice_type first_slice;
     size_type bucket_index_hash;
@@ -286,8 +286,8 @@ struct gpu_linearhashtable {
         bucket_index_hash, d_global_state_->template load_directory_size<concurrent>());
     while (true) {
       auto head_index = utils::memory::load<size_type, concurrent, true>(d_directory_ + bucket_index);
-      auto node = node_type(reinterpret_cast<elem_type*>(allocator.address(head_index)), tile);
-      node.template load<concurrent>();
+      auto node = node_type(head_index, tile, allocator);
+      node.template load_from_allocator<concurrent>();
       int location_if_found = coop_traverse_until_found<concurrent, use_hash_for_longkey>(
           node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
       if (location_if_found >= 0) { // found
@@ -321,7 +321,7 @@ struct gpu_linearhashtable {
                                            device_allocator_context_type& allocator,
                                            device_reclaimer_context_type& reclaimer,
                                            bool update_if_exists = false) {
-    using node_type = hashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     key_slice_type first_slice;
     size_type bucket_index_hash;
@@ -360,12 +360,12 @@ struct gpu_linearhashtable {
     while (true) {
       size_type bucket_index = get_bucket_index(bucket_index_hash, directory_size);
       size_type head_index = utils::memory::load<size_type, true, true>(d_directory_ + bucket_index);
-      auto node = node_type(reinterpret_cast<elem_type*>(allocator.address(head_index)), tile);
-      node_type::lock(node.get_node_ptr(), tile);
-      node.template load<true>();
+      auto node = node_type(head_index, tile, allocator);
+      node_type::lock(head_index, tile, allocator);
+      node.template load_from_allocator<true>();
       if (node.is_garbage()) {
         // this bucket just splitted by other thread; retry
-        node_type::unlock(node.get_node_ptr(), tile);
+        node_type::unlock(head_index, tile, allocator);
         directory_size = d_global_state_->template load_directory_size<true>();
         continue;
       }
@@ -379,38 +379,37 @@ struct gpu_linearhashtable {
           }
           else {
             node.update(location_if_found, value);
-            node.template store<true>();
+            node.template store_to_allocator<true>();
           }
         }
-        node_type::unlock(reinterpret_cast<elem_type*>(allocator.address(head_index)), tile);
+        node_type::unlock(head_index, tile, allocator);
         return update_if_exists;
       }
       // not exists
       value_type to_insert = value;
       if (more_key) {
         to_insert = allocator.allocate(tile);
-        auto suffix = suffix_type(
-            reinterpret_cast<elem_type*>(allocator.address(to_insert)), to_insert, tile, allocator);
+        auto suffix = suffix_type(to_insert, tile, allocator);
         static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
         suffix.create_from(key + suffix_offset, key_length - suffix_offset, value);
         suffix.store_head();
       }
       if (node.is_full()) {
         auto next_index = allocator.allocate(tile);
-        auto new_node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-        new_node.initialize_empty(node.get_local_depth());
+        auto new_node = node_type(next_index, tile, allocator);
+        new_node.initialize_empty(false, node.get_local_depth());
         new_node.insert(first_slice, to_insert, more_key);
         // write order: new_node -> node
-        new_node.template store<true>();
+        new_node.template store_to_allocator<true>();
         node.set_next_index(next_index);
         node.set_has_next();
       }
       else { // !node.is_full()
         node.insert(first_slice, to_insert, more_key);
       }
-      node.template store<true>();
-      // check if chain is too long
-      if (node.get_node_ptr() != reinterpret_cast<elem_type*>(allocator.address(head_index))) {
+      node.template store_to_allocator<true>();
+      // check if chain is too long (not one)
+      if (!node.is_head()) {
         // check if split is possible
         auto local_depth = node.get_local_depth();
           // first bucket that points to this node
@@ -418,18 +417,18 @@ struct gpu_linearhashtable {
         directory_size = d_global_state_->template load_directory_size<true>();
         if ((first_bucket_index ^ (1u << local_depth)) < directory_size) {
           // do split!
-          node = node_type(reinterpret_cast<elem_type*>(allocator.address(head_index)), tile);
-          node.template load<false>();
+          node = node_type(head_index, tile, allocator);
+          node.template load_from_allocator<false>();
           // mark garbage
           node.make_garbage();
-          node.template store<false>();
+          node.template store_to_allocator<false>();
           // allocate two new node chains
           auto new_node0_index = allocator.allocate(tile);
           auto new_node1_index = allocator.allocate(tile);
-          auto new_node0 = node_type(reinterpret_cast<elem_type*>(allocator.address(new_node0_index)), tile);
-          auto new_node1 = node_type(reinterpret_cast<elem_type*>(allocator.address(new_node1_index)), tile);
-          new_node0.initialize_empty(local_depth + 1, true);
-          new_node1.initialize_empty(local_depth + 1, true);
+          auto new_node0 = node_type(new_node0_index, tile, allocator);
+          auto new_node1 = node_type(new_node1_index, tile, allocator);
+          new_node0.initialize_empty(true, local_depth + 1, true);
+          new_node1.initialize_empty(true, local_depth + 1, true);
           // split
           while (true) {
             for (uint32_t loc = 0; loc < node.num_keys(); loc++) {
@@ -437,8 +436,7 @@ struct gpu_linearhashtable {
               uint32_t bucket_index_hash_at_loc;
               if (node.get_suffix_of_location(loc)) {
                 auto suffix_index = node.get_value_from_location(loc);
-                auto suffix = suffix_type(
-                    reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
+                auto suffix = suffix_type(suffix_index, tile, allocator);
                 suffix.load_head();
                 bucket_index_hash_at_loc = compute_hash_for_suffix<use_hash_for_longkey>(
                     suffix, use_hash_for_longkey ? 0 : node.get_key_from_location(loc), tile);
@@ -452,9 +450,9 @@ struct gpu_linearhashtable {
                   auto new_aux_index = allocator.allocate(tile);
                   new_node0.set_next_index(new_aux_index);
                   new_node0.set_has_next();
-                  new_node0.template store<false>();
-                  new_node0 = node_type(reinterpret_cast<elem_type*>(allocator.address(new_aux_index)), tile);
-                  new_node0.initialize_empty(local_depth + 1);
+                  new_node0.template store_to_allocator<false>();
+                  new_node0 = node_type(new_aux_index, tile, allocator);
+                  new_node0.initialize_empty(false, local_depth + 1);
                 }
                 new_node0.insert(node.get_key_from_location(loc),
                                  node.get_value_from_location(loc),
@@ -465,9 +463,9 @@ struct gpu_linearhashtable {
                   auto new_aux_index = allocator.allocate(tile);
                   new_node1.set_next_index(new_aux_index);
                   new_node1.set_has_next();
-                  new_node1.template store<false>();
-                  new_node1 = node_type(reinterpret_cast<elem_type*>(allocator.address(new_aux_index)), tile);
-                  new_node1.initialize_empty(local_depth + 1);
+                  new_node1.template store_to_allocator<false>();
+                  new_node1 = node_type(new_aux_index, tile, allocator);
+                  new_node1.initialize_empty(false, local_depth + 1);
                 }
                 new_node1.insert(node.get_key_from_location(loc),
                                  node.get_value_from_location(loc),
@@ -476,13 +474,13 @@ struct gpu_linearhashtable {
             }
             if (!node.has_next()) { break; }
             auto next_index = node.get_next_index();
-            node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-            node.template load<true>();
+            node = node_type(next_index, tile, allocator);
+            node.template load_from_allocator<true>();
             reclaimer.retire(next_index, tile);
           }
           // store last nodes of two new buckets
-          new_node0.template store<true>();
-          new_node1.template store<true>();
+          new_node0.template store_to_allocator<true>();
+          new_node1.template store_to_allocator<true>();
           // publish new buckets: 
           auto local_depth_mask = (1u << local_depth);
           d_global_state_->lock(tile);
@@ -492,11 +490,11 @@ struct gpu_linearhashtable {
             utils::memory::store<size_type, true, true>(d_directory_ + index, new_node_index);
           }
           d_global_state_->unlock(tile);
-          node_type::unlock(reinterpret_cast<elem_type*>(allocator.address(new_node0_index)), tile);
-          node_type::unlock(reinterpret_cast<elem_type*>(allocator.address(new_node1_index)), tile);
+          node_type::unlock(new_node0_index, tile, allocator);
+          node_type::unlock(new_node1_index, tile, allocator);
         }
       }
-      node_type::unlock(reinterpret_cast<elem_type*>(allocator.address(head_index)), tile);
+      node_type::unlock(head_index, tile, allocator);
       reclaimer.retire(head_index, tile);
       // increment counter
       d_global_state_->template increment_num_entries<1>(tile);
@@ -511,7 +509,7 @@ struct gpu_linearhashtable {
                                           const tile_type& tile,
                                           device_allocator_context_type& allocator,
                                           device_reclaimer_context_type& reclaimer) {
-    using node_type = hashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     key_slice_type first_slice;
     size_type bucket_index_hash;
@@ -530,9 +528,9 @@ struct gpu_linearhashtable {
         bucket_index_hash, d_global_state_->template load_directory_size<true>());
     while (true) {
       size_type head_index = utils::memory::load<size_type, true, true>(d_directory_ + bucket_index);
-      auto node = node_type(reinterpret_cast<elem_type*>(allocator.address(head_index)), tile);
-      node_type::lock(node.get_node_ptr(), tile);
-      node.template load<true>();
+      auto node = node_type(head_index, tile, allocator);
+      node_type::lock(head_index, tile, allocator);
+      node.template load_from_allocator<true>();
       int location_if_found;
       if constexpr (do_merge) {
         location_if_found = coop_traverse_until_found_merge<use_hash_for_longkey>(
@@ -544,17 +542,17 @@ struct gpu_linearhashtable {
       }
       if (location_if_found >= 0) { // exists
         node.erase(location_if_found);
-        node.template store<true>();
+        node.template store_to_allocator<true>();
         if (more_key) {
           suffix_if_found.retire(reclaimer);
         }
-        node_type::unlock(reinterpret_cast<elem_type*>(allocator.address(head_index)), tile);
+        node_type::unlock(head_index, tile, allocator);
         // decrement counter
         d_global_state_->template increment_num_entries<-1>(tile);
         return true;
       }
       // not exists
-      node_type::unlock(reinterpret_cast<elem_type*>(allocator.address(head_index)), tile);
+      node_type::unlock(head_index, tile, allocator);
       auto retry_bucket_index = get_bucket_index(
         bucket_index_hash, d_global_state_->template load_directory_size<true>());
       if (bucket_index != retry_bucket_index) {
@@ -640,7 +638,7 @@ struct gpu_linearhashtable {
   }
 
   template <bool concurrent, bool use_hash_for_longkey, typename tile_type>
-  DEVICE_QUALIFIER int coop_traverse_until_found(hashtable_node<tile_type>& node,
+  DEVICE_QUALIFIER int coop_traverse_until_found(hashtable_node<tile_type, device_allocator_context_type>& node,
                                                  const key_slice_type& first_slice,
                                                  bool more_key,
                                                  const key_slice_type* key,
@@ -648,7 +646,7 @@ struct gpu_linearhashtable {
                                                  suffix_node<tile_type, device_allocator_context_type>& suffix_if_found,
                                                  const tile_type& tile,
                                                  device_allocator_context_type& allocator) {
-    using node_type = hashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     while (true) {
       uint32_t to_check = node.match_key_in_node(first_slice, more_key);
@@ -657,8 +655,7 @@ struct gpu_linearhashtable {
         while (to_check != 0) {
           auto cur_location = __ffs(to_check) - 1;
           auto suffix_index = node.get_value_from_location(cur_location);
-          auto suffix = suffix_type(
-              reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
+          auto suffix = suffix_type(suffix_index, tile, allocator);
           suffix.load_head();
           static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
           if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
@@ -679,15 +676,15 @@ struct gpu_linearhashtable {
       // done searching this node, move on to next
       if (!node.has_next()) { break; }
       auto next_index = node.get_next_index();
-      node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-      node.template load<concurrent>();
+      node = node_type(next_index, tile, allocator);
+      node.template load_from_allocator<concurrent>();
     }
     // not found until the end
     return -1;
   }
 
   template <bool use_hash_for_longkey, typename tile_type>
-  DEVICE_QUALIFIER int coop_traverse_until_found_merge(hashtable_node<tile_type>& node,
+  DEVICE_QUALIFIER int coop_traverse_until_found_merge(hashtable_node<tile_type, device_allocator_context_type>& node,
                                                        const key_slice_type& first_slice,
                                                        bool more_key,
                                                        const key_slice_type* key,
@@ -696,7 +693,7 @@ struct gpu_linearhashtable {
                                                        const tile_type& tile,
                                                        device_allocator_context_type& allocator,
                                                        device_reclaimer_context_type& reclaimer) {
-    using node_type = hashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     bool current_node_store_deferred = false;
     while (true) {
@@ -706,8 +703,7 @@ struct gpu_linearhashtable {
         while (to_check != 0) {
           auto cur_location = __ffs(to_check) - 1;
           auto suffix_index = node.get_value_from_location(cur_location);
-          auto suffix = suffix_type(
-              reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
+          auto suffix = suffix_type(suffix_index, tile, allocator);
           suffix.load_head();
           static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
           if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
@@ -728,14 +724,14 @@ struct gpu_linearhashtable {
         }
       }
       if (current_node_store_deferred) {
-        node.template store<true>();
+        node.template store_to_allocator<true>();
         current_node_store_deferred = false;
       }
       // done searching this node, move on to next
       if (!node.has_next()) { break; }
       auto next_index = node.get_next_index();
-      auto next_node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-      next_node.template load<true>();
+      auto next_node = node_type(next_index, tile, allocator);
+      next_node.template load_from_allocator<true>();
       if (node.is_mergeable(next_node)) {
         node.merge(next_node);
         current_node_store_deferred = true;
@@ -862,14 +858,14 @@ struct gpu_linearhashtable {
   DEVICE_QUALIFIER void cooperative_traverse_nodes(Func& task, const tile_type& tile) {
     // debug-purpose, so inefficient implementation
     // called with single warp
-    using node_type = hashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     device_allocator_context_type allocator{allocator_, tile};
     size_type directory_size = d_global_state_->template load_directory_size<false>();
     auto global_depth = compute_global_depth(directory_size);
     for (size_type bucket_index = 0; bucket_index < directory_size; bucket_index++) {
       auto node_index = d_directory_[bucket_index];
-      auto node = node_type(reinterpret_cast<elem_type*>(allocator.address(node_index)), tile);
-      node.template load<false>();
+      auto node = node_type(node_index, tile, allocator);
+      node.template load_from_allocator<false>();
       // Check if this is the first pointer to this node
       size_type global_minus_local_mask = (1u << global_depth) - 1;
       global_minus_local_mask &= ~((1u << node.get_local_depth()) - 1);
@@ -880,8 +876,8 @@ struct gpu_linearhashtable {
       task.exec(node, bucket_index, tile, allocator);
       while (node.has_next()) {
         auto next_index = node.get_next_index();
-        node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-        node.template load<false>();
+        node = node_type(next_index, tile, allocator);
+        node.template load_from_allocator<false>();
         task.exec(node, -1, tile, allocator);
       }
     }
@@ -926,8 +922,7 @@ struct gpu_linearhashtable {
         bool suffix_bit = node.get_suffix_of_location(i);
         if (suffix_bit) {
           auto suffix_index = node.get_value_from_location(i);
-          auto suffix = suffix_node<tile_type, device_allocator_context_type>(
-              reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
+          auto suffix = suffix_node<tile_type, device_allocator_context_type>(suffix_index, tile, allocator);
           suffix.load_head();
           num_suffix_nodes_ += suffix.get_num_nodes();
         }
@@ -966,18 +961,17 @@ struct gpu_linearhashtable {
   DEVICE_QUALIFIER void initialize_bucket(size_type bucket_index,
                                           const tile_type& tile,
                                           device_allocator_context_type& allocator) {
-    using node_type = hashtable_node<tile_type>;
+    using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     // global state
     if (bucket_index == 0) {
       *d_global_state_ = global_state(directory_delta);
     }
     // allocate node
     auto node_index = allocator.allocate(tile);
-    auto node = node_type(
-        reinterpret_cast<elem_type*>(allocator.address(node_index)), tile);
+    auto node = node_type(node_index, tile, allocator);
     // initial local depth = initial global depth of initial directory size
-    node.initialize_empty(compute_global_depth(directory_delta));
-    node.template store<false>();
+    node.initialize_empty(true, compute_global_depth(directory_delta));
+    node.template store_to_allocator<false>();
     d_directory_[bucket_index] = node_index;
   }
 
