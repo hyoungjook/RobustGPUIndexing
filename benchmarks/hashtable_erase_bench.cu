@@ -96,7 +96,8 @@ bench_rates bench_hashtable_insertion_erase(thrust::device_vector<key_slice_type
 int main(int argc, char** argv) {
   auto arguments    = std::vector<std::string>(argv, argv + argc);
   uint32_t num_keys = get_arg_value<uint32_t>(arguments, "num-keys").value_or(1'000'000);
-  float fill_factor = get_arg_value<float>(arguments, "fill-factor").value_or(1.0f);
+  float chain_array_fill_factor = get_arg_value<float>(arguments, "chain-array-fill-factor").value_or(1.0f);
+  float cuckoo_fill_factor = get_arg_value<float>(arguments, "cuckoo-fill-factor").value_or(0.9f);
   int device_id     = get_arg_value<int>(arguments, "device").value_or(0);
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
@@ -204,7 +205,8 @@ int main(int argc, char** argv) {
 
   std::cout << "Benchmarking...\n";
   std::cout << "num_keys = " << num_keys << ", ";
-  std::cout << "fill_factor = " << fill_factor << ", ";
+  std::cout << "chain_array_fill_factor = " << chain_array_fill_factor << ", ";
+  std::cout << "cuckoo_fill_factor = " << cuckoo_fill_factor << ", ";
   std::cout << "min_key_length = " << min_key_length << ", ";
   std::cout << "max_key_length = " << max_key_length << ", ";
   std::cout << "common_prefix_ratio = " << common_prefix_ratio << std::endl;
@@ -220,31 +222,31 @@ int main(int argc, char** argv) {
   std::cout << "Benchmarking chainhashtable_slab_reclaim_type no-merge prefix4longkey" << std::endl;
   bench_hashtable_insertion_erase<chainhashtable_slab_reclaim_type, false, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-    num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
+    num_keys, chain_array_fill_factor, max_key_length, erase_ratio, num_experiments
   );
   std::cout << "Benchmarking chainhashtable_slab_reclaim_type merge prefix4longkey" << std::endl;
   bench_hashtable_insertion_erase<chainhashtable_slab_reclaim_type, true, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-    num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
+    num_keys, chain_array_fill_factor, max_key_length, erase_ratio, num_experiments
   );
   std::cout << "Benchmarking chainhashtable_slab_reclaim_type no-merge hash4longkey" << std::endl;
   bench_hashtable_insertion_erase<chainhashtable_slab_reclaim_type, false, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-    num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
+    num_keys, chain_array_fill_factor, max_key_length, erase_ratio, num_experiments
   );
   std::cout << "Benchmarking chainhashtable_slab_reclaim_type merge hash4longkey" << std::endl;
   bench_hashtable_insertion_erase<chainhashtable_slab_reclaim_type, true, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-    num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
+    num_keys, chain_array_fill_factor, max_key_length, erase_ratio, num_experiments
   );
   std::cout << "Benchmarking cuckoohashtable_slab_reclaim_type prefix4longkey" << std::endl;
   bench_hashtable_insertion_erase<cuckoohashtable_slab_reclaim_type, false, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-    num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
+    num_keys, cuckoo_fill_factor, max_key_length, erase_ratio, num_experiments
   );
   std::cout << "Benchmarking cuckoohashtable_slab_reclaim_type hash4longkey" << std::endl;
   bench_hashtable_insertion_erase<cuckoohashtable_slab_reclaim_type, false, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths,
-    num_keys, fill_factor, max_key_length, erase_ratio, num_experiments
+    num_keys, cuckoo_fill_factor, max_key_length, erase_ratio, num_experiments
   );
 }

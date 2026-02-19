@@ -53,7 +53,7 @@ struct gpu_cuckoohashtable {
   static auto constexpr cg_tile_size = 32;
   using hashtable_type = gpu_cuckoohashtable<Allocator, Reclaimer>;
   static auto constexpr num_hfs = 4;
-  static auto constexpr default_max_fill_factor = 0.9f;
+  static auto constexpr max_fill_factor = 0.9f;
   static uint32_t constexpr version_counter_size = 8192;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
@@ -81,7 +81,10 @@ struct gpu_cuckoohashtable {
            float fill_factor)
       : allocator_(host_allocator.get_device_instance())
       , reclaimer_(host_reclaimer.get_device_instance()) {
-    if (fill_factor > default_max_fill_factor) { fill_factor = default_max_fill_factor; }
+    if (fill_factor > max_fill_factor) {
+      fprintf(stderr, "Fill factor %f is too large for GPUCuckooHT. Max is %f\n", fill_factor, max_fill_factor);
+      exit(1);
+    }
     auto num_total_buckets = std::max(static_cast<std::size_t>(static_cast<double>(num_elements) / fill_factor / 15), 1UL);
     num_buckets_per_hf_ = (num_total_buckets + num_hfs - 1) / num_hfs;
     allocate();
