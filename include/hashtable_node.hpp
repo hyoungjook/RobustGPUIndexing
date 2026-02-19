@@ -279,6 +279,10 @@ struct hashtable_node {
       if (lead_lane) printf("empty}\n");
       return;
     }
+    if (is_garbage()) {
+      if (lead_lane) printf("garbage ");
+    }
+    if (lead_lane) printf("ld(%u) ", get_local_depth());
     if (lead_lane) printf("%u ", num_keys());
     for (size_type i = 0; i < num_keys(); ++i) {
       elem_type key = tile_.shfl(lane_elem_, get_key_lane_from_location(i));
@@ -325,7 +329,8 @@ struct hashtable_node {
   //    [has_next:1][is_locked:1]
   //    [num_keys:4]
   //    (LSB)
-  //  - local_depth, is_garbage, is_locked are only valid for head nodes
+  //  - is_garbage, is_locked are only valid for head nodes
+  //  - local_depth for the node chain is all same
 
   static_assert(sizeof(elem_type) == sizeof(uint32_t));
   static constexpr uint32_t metadata_lane_ = node_width - 1;

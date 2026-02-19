@@ -450,6 +450,117 @@ __global__ void initialize_kernel(linearhashtable table) {
   table.initialize_bucket(bucket_index, tile, allocator);
 }
 
+template <bool use_hash_for_longkey, typename key_slice_type, typename size_type, typename value_type>
+struct insert_device_func {
+  static constexpr bool reclaim_required = false;
+  // kernel args
+  const key_slice_type* d_keys;
+  size_type max_key_length;
+  const size_type* d_key_lengths;
+  const value_type* d_values;
+  bool update_if_exists;
+  // device-side registers
+  struct dev_regs {
+    const key_slice_type* key;
+    size_type key_length;
+    value_type value;
+  };
+  // device-side functions
+  template <typename tile_type>
+  DEVICE_QUALIFIER dev_regs load(uint32_t thread_id, tile_type& tile) const {
+    return dev_regs{
+      .key = &d_keys[max_key_length * thread_id],
+      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
+      .value = d_values[thread_id]
+    };
+  }
+  template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+    auto cur_key = tile.shfl(regs.key, cur_rank);
+    auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    auto cur_value = tile.shfl(regs.value, cur_rank);
+    table.template cooperative_insert<use_hash_for_longkey>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+  }
+  DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
+};
+
+template <bool concurrent, bool use_hash_for_longkey, typename key_slice_type, typename size_type, typename value_type>
+struct find_device_func {
+  static constexpr bool reclaim_required = false;
+  // kernel args
+  const key_slice_type* d_keys;
+  size_type max_key_length;
+  const size_type* d_key_lengths;
+  value_type* d_values;
+  // device-side registers
+  struct dev_regs {
+    const key_slice_type* key;
+    size_type key_length;
+    value_type value;
+  };
+  // device-side functions
+  template <typename tile_type>
+  DEVICE_QUALIFIER dev_regs load(uint32_t thread_id, tile_type& tile) const {
+    return dev_regs{
+      .key = &d_keys[max_key_length * thread_id],
+      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length
+    };
+  }
+  template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+    auto cur_key = tile.shfl(regs.key, cur_rank);
+    auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    auto cur_value = table.template cooperative_find<concurrent, use_hash_for_longkey>(cur_key, cur_key_length, tile, allocator);
+    if (tile.thread_rank() == cur_rank) {
+      regs.value = cur_value;
+    }
+  }
+  DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
+    d_values[thread_id] = regs.value;
+  }
+};
+
+template <bool do_merge, bool use_hash_for_longkey, typename key_slice_type, typename size_type, typename value_type>
+struct erase_device_func {
+  static constexpr bool reclaim_required = true;
+  // kernel args
+  const key_slice_type* d_keys;
+  size_type max_key_length;
+  const size_type* d_key_lengths;
+  // device-side registers
+  struct dev_regs {
+    const key_slice_type* key;
+    size_type key_length;
+  };
+  // device-side functions
+  template <typename tile_type>
+  DEVICE_QUALIFIER dev_regs load(uint32_t thread_id, tile_type& tile) const {
+    return dev_regs{
+      .key = &d_keys[max_key_length * thread_id],
+      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
+    };
+  }
+  template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+    auto cur_key = tile.shfl(regs.key, cur_rank);
+    auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    table.template cooperative_erase<do_merge, use_hash_for_longkey>(cur_key, cur_key_length, tile, allocator, reclaimer);
+  }
+  DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
+};
+
+template <typename hashtable, typename func>
+__global__ void traverse_nodes_kernel(hashtable table, func task) {
+  // called with single warp; not parallelized for debug purpose
+  assert(gridDim.x == 1 && gridDim.y == 1 && gridDim.z == 1);
+  assert(blockDim.x == 32 && blockDim.y == 1 && blockDim.z == 1);
+  auto block = cg::this_thread_block();
+  auto tile  = cg::tiled_partition<hashtable::cg_tile_size>(block);
+  task.init(tile);
+  table.cooperative_traverse_nodes(task, tile);
+  task.fini(tile);
+}
+
 } // namespace GpuLinearHashtable
 
 } // namespace kernel

@@ -531,7 +531,7 @@ struct gpu_cuckoohashtable {
       auto suffix = suffix_type(
         reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
       suffix.load_head();
-      hash = compute_hashx2_for_suffix<use_hash_for_longkey, true>(
+      hash = compute_hashx2_for_suffix<use_hash_for_longkey>(
         suffix, use_hash_for_longkey ? 0 : node.get_key_from_location(location), tile);
     }
     else {
@@ -632,12 +632,12 @@ struct gpu_cuckoohashtable {
     hash.x = hash_murmur3_finalizer(hash.x);
     return make_uint2(tile.shfl(hash.x, 0), tile.shfl(hash.x, 1));
   }
-  template <bool use_hash_for_longkey, bool atomic, typename suffix_type, typename tile_type>
+  template <bool use_hash_for_longkey, typename suffix_type, typename tile_type>
   DEVICE_QUALIFIER uint2 compute_hashx2_for_suffix(const suffix_type& suffix,
                                                    const key_slice_type& first_slice,
                                                    const tile_type& tile) {
     // compute polynomial
-    uint2 hash = suffix.template compute_polynomial<hash_prime0, hash_prime1>();
+    uint2 hash = suffix.template compute_polynomialx2<hash_prime0, hash_prime1>();
     if constexpr (!use_hash_for_longkey) {
       hash.x = (hash.x * hash_prime0) + first_slice;
       hash.y = (hash.y * hash_prime1) + first_slice;

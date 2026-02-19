@@ -57,8 +57,8 @@ struct gpu_linearhashtable {
 
   // TODO adjust
   static constexpr size_type max_directory_size = 128 * 1024 * 1024; // 0.5GB
-  static constexpr size_type directory_delta = 128;
-  static constexpr float load_factor_threshold = 0.9f;
+  static constexpr size_type directory_delta = 1;
+  static constexpr float load_factor_threshold = 1.0f;
 
   using host_allocator_type = Allocator;
   using device_allocator_instance_type = typename host_allocator_type::device_instance_type;
@@ -98,10 +98,10 @@ struct gpu_linearhashtable {
             cudaStream_t stream = 0,
             bool concurrent = false,
             bool use_hash_for_longkey = true) {
-    using find_concurrent_hash4long = kernel::GpuHashtable::find_device_func<true, true, key_slice_type, size_type, value_type>;
-    using find_concurrent_prfx4long = kernel::GpuHashtable::find_device_func<true, false, key_slice_type, size_type, value_type>;
-    using find_readonly_hash4long = kernel::GpuHashtable::find_device_func<false, true, key_slice_type, size_type, value_type>;
-    using find_readonly_prfx4long = kernel::GpuHashtable::find_device_func<false, false, key_slice_type, size_type, value_type>;
+    using find_concurrent_hash4long = kernel::GpuLinearHashtable::find_device_func<true, true, key_slice_type, size_type, value_type>;
+    using find_concurrent_prfx4long = kernel::GpuLinearHashtable::find_device_func<true, false, key_slice_type, size_type, value_type>;
+    using find_readonly_hash4long = kernel::GpuLinearHashtable::find_device_func<false, true, key_slice_type, size_type, value_type>;
+    using find_readonly_prfx4long = kernel::GpuLinearHashtable::find_device_func<false, false, key_slice_type, size_type, value_type>;
     #define find_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values
     if (concurrent) {
       if (use_hash_for_longkey) {
@@ -134,8 +134,8 @@ struct gpu_linearhashtable {
               cudaStream_t stream = 0,
               bool update_if_exists = false,
               bool use_hash_for_longkey = true) {
-    using insert_hash4long = kernel::GpuHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using insert_prfx4long = kernel::GpuHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
+    using insert_hash4long = kernel::GpuLinearHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
+    using insert_prfx4long = kernel::GpuLinearHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists
     if (use_hash_for_longkey) {
       insert_hash4long func{insert_args};
@@ -155,10 +155,10 @@ struct gpu_linearhashtable {
              cudaStream_t stream = 0,
              bool do_merge = true,
              bool use_hash_for_longkey = true) {
-    using erase_merge_hash4long = kernel::GpuHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>;
-    using erase_merge_prfx4long = kernel::GpuHashtable::erase_device_func<true, false, key_slice_type, size_type, value_type>;
-    using erase_nomerge_hash4long = kernel::GpuHashtable::erase_device_func<false, true, key_slice_type, size_type, value_type>;
-    using erase_nomerge_prfx4long = kernel::GpuHashtable::erase_device_func<false, false, key_slice_type, size_type, value_type>;
+    using erase_merge_hash4long = kernel::GpuLinearHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>;
+    using erase_merge_prfx4long = kernel::GpuLinearHashtable::erase_device_func<true, false, key_slice_type, size_type, value_type>;
+    using erase_nomerge_hash4long = kernel::GpuLinearHashtable::erase_device_func<false, true, key_slice_type, size_type, value_type>;
+    using erase_nomerge_prfx4long = kernel::GpuLinearHashtable::erase_device_func<false, false, key_slice_type, size_type, value_type>;
     #define erase_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths
     if (do_merge) {
       if (use_hash_for_longkey) {
@@ -195,12 +195,12 @@ struct gpu_linearhashtable {
                                     bool insert_update_if_exists = false,
                                     bool erase_do_merge = true,
                                     bool use_hash_for_longkey = true) {
-    using insert_hash4long = kernel::GpuHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using insert_prfx4long = kernel::GpuHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
-    using erase_merge_hash4long = kernel::GpuHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>;
-    using erase_merge_prfx4long = kernel::GpuHashtable::erase_device_func<true, false, key_slice_type, size_type, value_type>;
-    using erase_nomerge_hash4long = kernel::GpuHashtable::erase_device_func<false, true, key_slice_type, size_type, value_type>;
-    using erase_nomerge_prfx4long = kernel::GpuHashtable::erase_device_func<false, false, key_slice_type, size_type, value_type>;
+    using insert_hash4long = kernel::GpuLinearHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
+    using insert_prfx4long = kernel::GpuLinearHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
+    using erase_merge_hash4long = kernel::GpuLinearHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>;
+    using erase_merge_prfx4long = kernel::GpuLinearHashtable::erase_device_func<true, false, key_slice_type, size_type, value_type>;
+    using erase_nomerge_hash4long = kernel::GpuLinearHashtable::erase_device_func<false, true, key_slice_type, size_type, value_type>;
+    using erase_nomerge_prfx4long = kernel::GpuLinearHashtable::erase_device_func<false, false, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
     #define erase_args .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths
     if (use_hash_for_longkey) {
@@ -241,10 +241,10 @@ struct gpu_linearhashtable {
                                    cudaStream_t stream = 0,
                                    bool insert_update_if_exists = false,
                                    bool use_hash_for_longkey = true) {
-    using insert_hash4long = kernel::GpuHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using insert_prfx4long = kernel::GpuHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
-    using find_concurrent_hash4long = kernel::GpuHashtable::find_device_func<true, true, key_slice_type, size_type, value_type>;
-    using find_concurrent_prfx4long = kernel::GpuHashtable::find_device_func<true, false, key_slice_type, size_type, value_type>;
+    using insert_hash4long = kernel::GpuLinearHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
+    using insert_prfx4long = kernel::GpuLinearHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
+    using find_concurrent_hash4long = kernel::GpuLinearHashtable::find_device_func<true, true, key_slice_type, size_type, value_type>;
+    using find_concurrent_prfx4long = kernel::GpuLinearHashtable::find_device_func<true, false, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
     #define find_args .d_keys = find_keys, .max_key_length = max_key_length, .d_key_lengths = find_key_lengths, .d_values = find_values
     if (use_hash_for_longkey) {
@@ -285,7 +285,7 @@ struct gpu_linearhashtable {
     size_type bucket_index = get_bucket_index(
         bucket_index_hash, d_global_state_->template load_directory_size<concurrent>());
     while (true) {
-      auto head_index = utils::memory::load<size_type, concurrent>(d_directory_ + bucket_index);
+      auto head_index = utils::memory::load<size_type, concurrent, true>(d_directory_ + bucket_index);
       auto node = node_type(reinterpret_cast<elem_type*>(allocator.address(head_index)), tile);
       node.template load<concurrent>();
       int location_if_found = coop_traverse_until_found<concurrent, use_hash_for_longkey>(
@@ -319,6 +319,7 @@ struct gpu_linearhashtable {
                                            const value_type& value,
                                            const tile_type& tile,
                                            device_allocator_context_type& allocator,
+                                           device_reclaimer_context_type& reclaimer,
                                            bool update_if_exists = false) {
     using node_type = hashtable_node<tile_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
@@ -336,15 +337,16 @@ struct gpu_linearhashtable {
     }
     // check load factor
     size_type directory_size = d_global_state_->template load_directory_size<true>();
-    if (load_factor_threshold < (
-          static_cast<float>(d_global_state_->load_num_entries()) / 15.0f / directory_size)) {
+    if ((load_factor_threshold < (
+          static_cast<float>(d_global_state_->load_num_entries()) / 15.0f / directory_size)) &&
+        (directory_size + directory_delta <= max_directory_size)) {
       // extend directory
       // if global state is already locked, someone else is already splitting so move on
       if (d_global_state_->try_lock(tile)) {
         directory_size = d_global_state_->template load_directory_size<true>();
         auto new_directory_size = directory_size + directory_delta;
         size_type copy_from = 1u << (compute_global_depth(new_directory_size) - 1);
-        // copy pointers to new directory
+        // copy pointers to new directory // TODO vectorize load/stores
         for (size_type bucket = directory_size; bucket < new_directory_size; bucket++) {
           d_directory_[bucket] = d_directory_[bucket - copy_from];
         }
@@ -357,7 +359,7 @@ struct gpu_linearhashtable {
     suffix_type suffix_if_found(tile, allocator);
     while (true) {
       size_type bucket_index = get_bucket_index(bucket_index_hash, directory_size);
-      size_type head_index = utils::memory::load<size_type, true>(d_directory_ + bucket_index);
+      size_type head_index = utils::memory::load<size_type, true, true>(d_directory_ + bucket_index);
       auto node = node_type(reinterpret_cast<elem_type*>(allocator.address(head_index)), tile);
       node_type::lock(node.get_node_ptr(), tile);
       node.template load<true>();
@@ -396,7 +398,7 @@ struct gpu_linearhashtable {
       if (node.is_full()) {
         auto next_index = allocator.allocate(tile);
         auto new_node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
-        new_node.initialize_empty();
+        new_node.initialize_empty(node.get_local_depth());
         new_node.insert(first_slice, to_insert, more_key);
         // write order: new_node -> node
         new_node.template store<true>();
@@ -407,7 +409,92 @@ struct gpu_linearhashtable {
         node.insert(first_slice, to_insert, more_key);
       }
       node.template store<true>();
+      // check if chain is too long
+      if (node.get_node_ptr() != reinterpret_cast<elem_type*>(allocator.address(head_index))) {
+        // check if split is possible
+        auto local_depth = node.get_local_depth();
+          // first bucket that points to this node
+        auto first_bucket_index = bucket_index & ((1u << local_depth) - 1);
+        directory_size = d_global_state_->template load_directory_size<true>();
+        if ((first_bucket_index ^ (1u << local_depth)) < directory_size) {
+          // do split!
+          node = node_type(reinterpret_cast<elem_type*>(allocator.address(head_index)), tile);
+          node.template load<false>();
+          // mark garbage
+          node.make_garbage();
+          node.template store<false>();
+          // allocate two new node chains
+          auto new_node0_index = allocator.allocate(tile);
+          auto new_node1_index = allocator.allocate(tile);
+          auto new_node0 = node_type(reinterpret_cast<elem_type*>(allocator.address(new_node0_index)), tile);
+          auto new_node1 = node_type(reinterpret_cast<elem_type*>(allocator.address(new_node1_index)), tile);
+          new_node0.initialize_empty(local_depth + 1);
+          new_node1.initialize_empty(local_depth + 1);
+          // split
+          while (true) {
+            for (uint32_t loc = 0; loc < node.num_keys(); loc++) {
+              // decide new_node0 or new_node1
+              uint32_t bucket_index_hash_at_loc;
+              if (node.get_suffix_of_location(loc)) {
+                auto suffix_index = node.get_value_from_location(loc);
+                auto suffix = suffix_type(
+                    reinterpret_cast<elem_type*>(allocator.address(suffix_index)), suffix_index, tile, allocator);
+                suffix.load_head();
+                bucket_index_hash_at_loc = compute_hash_for_suffix<use_hash_for_longkey>(
+                    suffix, use_hash_for_longkey ? 0 : node.get_key_from_location(loc), tile);
+              }
+              else {
+                bucket_index_hash_at_loc = compute_hash_single_slice(node.get_key_from_location(loc));
+              }
+              // store to either new_node0 or new_node1
+              if ((bucket_index_hash_at_loc & (1u << local_depth)) == 0) {  // new_node0
+                if (new_node0.is_full()) {
+                  auto new_aux_index = allocator.allocate(tile);
+                  new_node0.set_next_index(new_aux_index);
+                  new_node0.set_has_next();
+                  new_node0.template store<false>();
+                  new_node0 = node_type(reinterpret_cast<elem_type*>(allocator.address(new_aux_index)), tile);
+                  new_node0.initialize_empty(local_depth + 1);
+                }
+                new_node0.insert(node.get_key_from_location(loc),
+                                 node.get_value_from_location(loc),
+                                 node.get_suffix_of_location(loc));
+              }
+              else {  // new_node1
+                if (new_node1.is_full()) {
+                  auto new_aux_index = allocator.allocate(tile);
+                  new_node1.set_next_index(new_aux_index);
+                  new_node1.set_has_next();
+                  new_node1.template store<false>();
+                  new_node1 = node_type(reinterpret_cast<elem_type*>(allocator.address(new_aux_index)), tile);
+                  new_node1.initialize_empty(local_depth + 1);
+                }
+                new_node1.insert(node.get_key_from_location(loc),
+                                 node.get_value_from_location(loc),
+                                 node.get_suffix_of_location(loc));
+              }
+            }
+            if (!node.has_next()) { break; }
+            auto next_index = node.get_next_index();
+            node = node_type(reinterpret_cast<elem_type*>(allocator.address(next_index)), tile);
+            node.template load<true>();
+            reclaimer.retire(next_index, tile);
+          }
+          // store last nodes of two new buckets
+          new_node0.template store<true>();
+          new_node1.template store<true>();
+          // publish new buckets: 
+          auto local_depth_mask = (1u << local_depth);
+          d_global_state_->lock(tile);
+          for (size_type index = first_bucket_index; index < directory_size; index += local_depth_mask) {
+            auto new_node_index = (index & local_depth_mask) == 0 ? new_node0_index : new_node1_index;
+            utils::memory::store<size_type, true, true>(d_directory_ + index, new_node_index);
+          }
+          d_global_state_->unlock(tile);
+        }
+      }
       node_type::unlock(reinterpret_cast<elem_type*>(allocator.address(head_index)), tile);
+      reclaimer.retire(head_index, tile);
       // increment counter
       d_global_state_->template increment_num_entries<1>(tile);
       return true;
@@ -439,7 +526,7 @@ struct gpu_linearhashtable {
     size_type bucket_index = get_bucket_index(
         bucket_index_hash, d_global_state_->template load_directory_size<true>());
     while (true) {
-      size_type head_index = utils::memory::load<size_type, true>(d_directory_ + bucket_index);
+      size_type head_index = utils::memory::load<size_type, true, true>(d_directory_ + bucket_index);
       auto node = node_type(reinterpret_cast<elem_type*>(allocator.address(head_index)), tile);
       node_type::lock(node.get_node_ptr(), tile);
       node.template load<true>();
@@ -745,6 +832,26 @@ struct gpu_linearhashtable {
     hash = hash_murmur3_finalizer(hash);
     return make_uint2(tile.shfl(hash, 0), tile.shfl(hash, cg_tile_size - 1));
   }
+  DEVICE_QUALIFIER uint32_t compute_hash_single_slice(const key_slice_type& key) {
+    // if key_length == 1, hash = murmur3(((key * p) + 1) * p)
+    uint32_t hash = ((key * hash_prime0) + 1) * hash_prime0;
+    return hash_murmur3_finalizer(hash);
+  }
+  template <bool use_hash_for_longkey, typename suffix_type, typename tile_type>
+  DEVICE_QUALIFIER uint32_t compute_hash_for_suffix(const suffix_type& suffix,
+                                                    const key_slice_type& first_slice,
+                                                    const tile_type& tile) {
+    // compute polynomial
+    uint32_t hash = suffix.template compute_polynomial<hash_prime0>();
+    if constexpr (!use_hash_for_longkey) {
+      hash = (hash * hash_prime0) + first_slice;
+    }
+    static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
+    uint32_t key_length = suffix.get_key_length() + suffix_offset;
+    hash = ((hash * hash_prime0) + key_length) * hash_prime0;
+    // finalize
+    return hash_murmur3_finalizer(hash);
+  }
 
  public:
   // device-side debug functions
@@ -779,7 +886,7 @@ struct gpu_linearhashtable {
 
   template <typename func>
   void traverse_nodes(func task) {
-    kernel::GpuHashtable::traverse_nodes_kernel<<<1, 32>>>(*this, task);
+    kernel::GpuLinearHashtable::traverse_nodes_kernel<<<1, 32>>>(*this, task);
     cudaDeviceSynchronize();
   }
 
