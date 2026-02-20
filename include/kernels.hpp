@@ -454,7 +454,7 @@ __global__ void initialize_kernel(linearhashtable table) {
 
 template <bool use_hash_tag, bool tag_use_same_hash, typename key_slice_type, typename size_type, typename value_type>
 struct insert_device_func {
-  static constexpr bool reclaim_required = false;
+  static constexpr bool reclaim_required = true;
   // kernel args
   const key_slice_type* d_keys;
   size_type max_key_length;
