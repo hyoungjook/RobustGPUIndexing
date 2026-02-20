@@ -169,13 +169,12 @@ struct testing_input {
   mapped_vector<key_slice_type> keys_not_exist;
 };
 
-using simple_bump_alloc_type = simple_bump_allocator<128>;
-using simple_slab_alloc_type = simple_slab_allocator<128>;
+using simple_bump_linear_alloc_type = simple_bump_linear_allocator<128>;
 using simple_dummy_reclaim_type = simple_dummy_reclaimer;
 using simple_debra_reclaim_type = simple_debra_reclaimer<>;
 
 typedef testing::Types<
-    MapData<GpuLinearHashtable::gpu_linearhashtable<simple_slab_alloc_type, simple_debra_reclaim_type>>>
+    MapData<GpuLinearHashtable::gpu_linearhashtable<simple_bump_linear_alloc_type, simple_debra_reclaim_type>>>
     Implementations;
 
 TYPED_TEST_SUITE(MapTest, Implementations);
