@@ -539,7 +539,7 @@ struct gpu_linearhashtable {
           directory_size = d_global_state_->template load_directory_size<true>();
           for (size_type index = first_bucket_index; index < directory_size; index += local_depth_mask) {
             auto new_node_index = (index & local_depth_mask) == 0 ? new_node0_index : new_node1_index;
-            d_directory_[index] = new_node_index;
+            *(d_directory_ - index) = new_node_index;
           }
           reclaimer.retire(head_index, tile);
           met_invalid_pointer = false;
@@ -552,7 +552,7 @@ struct gpu_linearhashtable {
         auto local_depth_mask = (1u << local_depth);
         directory_size = d_global_state_->template load_directory_size<true>();
         for (size_type index = first_bucket_index; index < directory_size; index += local_depth_mask) {
-          d_directory_[index] = head_index;
+          *(d_directory_ - index) = head_index;
         }
       }
       node_type::unlock(head_index, tile, allocator);
@@ -569,7 +569,7 @@ struct gpu_linearhashtable {
               new_directory_size = (new_directory_size + cg_tile_size - 1) / cg_tile_size * cg_tile_size;  // should be multiple of 32
               // invalidate new pointers
               for (size_type bucket = directory_size; bucket < new_directory_size; bucket += 32) {
-                d_directory_[bucket + tile.thread_rank()] = invalid_pointer;
+                *(d_directory_ - (bucket + tile.thread_rank())) = invalid_pointer;
               }
               // publish new directory
               directory_size = new_directory_size;
@@ -735,7 +735,7 @@ struct gpu_linearhashtable {
     }
     bool met_invalid_pointer = false;
     while (true) {
-      size_type head_index = utils::memory::load<size_type, concurrent, true>(d_directory_ + bucket_index);
+      size_type head_index = utils::memory::load<size_type, concurrent, true>(d_directory_ - bucket_index);
       if (head_index == invalid_pointer) {
         // retry after unsetting MSB 1
         assert(bucket_index != 0);
@@ -986,7 +986,7 @@ struct gpu_linearhashtable {
     size_type directory_size = d_global_state_->template load_directory_size<false>();
     auto global_depth = compute_global_depth(directory_size);
     for (size_type bucket_index = 0; bucket_index < directory_size; bucket_index++) {
-      auto node_index = d_directory_[bucket_index];
+      auto node_index = *(d_directory_ - bucket_index);
       if (node_index == invalid_pointer) continue;
       auto node = node_type(node_index, tile, allocator);
       node.template load_from_allocator<false>();
@@ -1096,19 +1096,21 @@ struct gpu_linearhashtable {
     // initial local depth = initial global depth of initial directory size
     node.initialize_empty(true, compute_global_depth(initial_directory_size_));
     node.template store_to_allocator<false>();
-    d_directory_[bucket_index] = node_index;
+    *(d_directory_ - bucket_index) = node_index;
   }
 
   void allocate() {
     is_owner_ = true;
     cuda_try(cudaMalloc(&d_directory_, sizeof(size_type) * max_directory_size));
+    // directory should point to the end of the memory block
+    d_directory_ += (max_directory_size - 1);
     cuda_try(cudaMalloc(&d_global_state_, sizeof(global_state)));
     initialize();
   }
 
   void deallocate() {
     if (is_owner_) {
-      cuda_try(cudaFree(d_directory_));
+      cuda_try(cudaFree(d_directory_ - (max_directory_size - 1)));
       cuda_try(cudaFree(d_global_state_));
     }
   }
