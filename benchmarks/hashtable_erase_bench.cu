@@ -40,7 +40,7 @@ struct bench_rates {
   float insertion_rate;
   float find_rate;
 };
-template <typename hashtable_type, bool do_merge, bool use_hash_for_longkey>
+template <typename hashtable_type, bool do_merge, bool use_hash_tag>
 bench_rates bench_hashtable_insertion_erase(thrust::device_vector<key_slice_type>& d_keys,
                                             thrust::device_vector<size_type>& d_lengths,
                                             thrust::device_vector<value_type>& d_values,
@@ -65,7 +65,7 @@ bench_rates bench_hashtable_insertion_erase(thrust::device_vector<key_slice_type
               << std::endl;
     gpu_timer insert_timer(insertion_stream);
     insert_timer.start_timer();
-    table.insert(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream, false, use_hash_for_longkey);
+    table.insert(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream, false, use_hash_tag);
     insert_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     auto insertion_elapsed = insert_timer.get_elapsed_s();
@@ -74,7 +74,7 @@ bench_rates bench_hashtable_insertion_erase(thrust::device_vector<key_slice_type
     gpu_timer erase_timer(erase_stream);
     uint32_t num_erase = (uint32_t)(((float)num_keys) * erase_ratio);
     erase_timer.start_timer();
-    table.erase(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase, erase_stream, do_merge, use_hash_for_longkey);
+    table.erase(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase, erase_stream, do_merge, use_hash_tag);
     erase_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     auto erase_elapsed = erase_timer.get_elapsed_s();

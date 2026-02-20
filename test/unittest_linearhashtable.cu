@@ -482,7 +482,7 @@ DECLARE_TESTS_FOR_KEY_LENGTHS(100, 800)
 int main(int argc, char** argv) {
   auto arguments = std::vector<std::string>(argv, argv + argc);
   num_keys       = get_arg_value<uint32_t>(arguments, "num-keys").value_or(1024);
-  initial_directory_size = get_arg_value<uint32_t>(arguments, "initial-directory-size").value_or(1024u * 1024u);
+  initial_directory_size = get_arg_value<uint32_t>(arguments, "initial-directory-size").value_or(1024u);
   resize_policy = get_arg_value<float>(arguments, "resize-policy").value_or(2.0f);
   std::cout << "Testing using " << num_keys << " keys, initial-directory-size " << initial_directory_size << ", resize-policy " << resize_policy << "\n";
   ::testing::InitGoogleTest(&argc, argv);

@@ -40,7 +40,7 @@ struct bench_rates {
   float insertion_rate;
   float find_rate;
 };
-template <typename linearhashtable_type, bool concurrent_find, bool use_hash_for_longkey>
+template <typename linearhashtable_type, bool concurrent_find, bool use_hash_tag, bool tag_use_same_hash>
 bench_rates bench_linearhashtable_insertion_find(thrust::device_vector<key_slice_type>& d_keys,
                                                  thrust::device_vector<size_type>& d_lengths,
                                                  thrust::device_vector<value_type>& d_values,
@@ -69,7 +69,7 @@ bench_rates bench_linearhashtable_insertion_find(thrust::device_vector<key_slice
               << std::endl;
     gpu_timer insert_timer(insertion_stream);
     insert_timer.start_timer();
-    table.insert(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream, false, use_hash_for_longkey);
+    table.insert(d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys, insertion_stream, false, use_hash_tag, tag_use_same_hash);
     insert_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     auto insertion_elapsed = insert_timer.get_elapsed_s();
@@ -77,7 +77,7 @@ bench_rates bench_linearhashtable_insertion_find(thrust::device_vector<key_slice
 
     gpu_timer find_timer(find_stream);
     find_timer.start_timer();
-    table.find(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys, find_stream, concurrent_find, use_hash_for_longkey);
+    table.find(d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys, find_stream, concurrent_find, use_hash_tag, tag_use_same_hash);
     find_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
     auto find_elapsed = find_timer.get_elapsed_s();
@@ -123,7 +123,7 @@ int main(int argc, char** argv) {
   auto arguments    = std::vector<std::string>(argv, argv + argc);
   uint32_t num_keys = get_arg_value<uint32_t>(arguments, "num-keys").value_or(1'000'000);
   int device_id     = get_arg_value<int>(arguments, "device").value_or(0);
-  uint32_t initial_directory_size = get_arg_value<uint32_t>(arguments, "initial-directory-size").value_or(1024u * 1024u);
+  uint32_t initial_directory_size = get_arg_value<uint32_t>(arguments, "initial-directory-size").value_or(1024u);
   float resize_policy = get_arg_value<float>(arguments, "resize-policy").value_or(2.0f);
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
@@ -244,22 +244,32 @@ int main(int argc, char** argv) {
   using linearhashtable_slab_reclaim_type = GpuLinearHashtable::gpu_linearhashtable<simple_slab_alloc_type, simple_debra_reclaim_type>;
 
   std::cout << "Benchmarking linearhashtable_slab_reclaim_type readonlyfind prefix4longkey" << std::endl;
-  bench_linearhashtable_insertion_find<linearhashtable_slab_reclaim_type, false, false>(
+  bench_linearhashtable_insertion_find<linearhashtable_slab_reclaim_type, false, false, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, num_experiments, initial_directory_size, resize_policy, validate_result, validate_index
   );
   std::cout << "Benchmarking linearhashtable_slab_reclaim_type concurrentfind prefix4longkey" << std::endl;
-  bench_linearhashtable_insertion_find<linearhashtable_slab_reclaim_type, true, false>(
+  bench_linearhashtable_insertion_find<linearhashtable_slab_reclaim_type, true, false, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, num_experiments, initial_directory_size, resize_policy, validate_result, validate_index
   );
   std::cout << "Benchmarking linearhashtable_slab_reclaim_type readonlyfind hash4longkey" << std::endl;
-  bench_linearhashtable_insertion_find<linearhashtable_slab_reclaim_type, false, true>(
+  bench_linearhashtable_insertion_find<linearhashtable_slab_reclaim_type, false, true, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, num_experiments, initial_directory_size, resize_policy, validate_result, validate_index
   );
   std::cout << "Benchmarking linearhashtable_slab_reclaim_type concurrentfind hash4longkey" << std::endl;
-  bench_linearhashtable_insertion_find<linearhashtable_slab_reclaim_type, true, true>(
+  bench_linearhashtable_insertion_find<linearhashtable_slab_reclaim_type, true, true, false>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+    num_keys, max_key_length, num_experiments, initial_directory_size, resize_policy, validate_result, validate_index
+  );
+  std::cout << "Benchmarking linearhashtable_slab_reclaim_type readonlyfind samehash4longkey" << std::endl;
+  bench_linearhashtable_insertion_find<linearhashtable_slab_reclaim_type, false, true, true>(
+    d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
+    num_keys, max_key_length, num_experiments, initial_directory_size, resize_policy, validate_result, validate_index
+  );
+  std::cout << "Benchmarking linearhashtable_slab_reclaim_type concurrentfind samehash4longkey" << std::endl;
+  bench_linearhashtable_insertion_find<linearhashtable_slab_reclaim_type, true, true, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, num_experiments, initial_directory_size, resize_policy, validate_result, validate_index
   );

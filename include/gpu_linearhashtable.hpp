@@ -112,16 +112,25 @@ struct gpu_linearhashtable {
             const size_type num_keys,
             cudaStream_t stream = 0,
             bool concurrent = false,
-            bool use_hash_for_longkey = true) {
-    using find_concurrent_hash4long = kernel::GpuLinearHashtable::find_device_func<true, true, key_slice_type, size_type, value_type>;
-    using find_concurrent_prfx4long = kernel::GpuLinearHashtable::find_device_func<true, false, key_slice_type, size_type, value_type>;
-    using find_readonly_hash4long = kernel::GpuLinearHashtable::find_device_func<false, true, key_slice_type, size_type, value_type>;
-    using find_readonly_prfx4long = kernel::GpuLinearHashtable::find_device_func<false, false, key_slice_type, size_type, value_type>;
+            bool use_hash_tag = true,
+            bool tag_use_same_hash = true) {
+    using find_concurrent_samehash4long = kernel::GpuLinearHashtable::find_device_func<true, true, true, key_slice_type, size_type, value_type>;
+    using find_concurrent_hash4long = kernel::GpuLinearHashtable::find_device_func<true, true, false, key_slice_type, size_type, value_type>;
+    using find_concurrent_prfx4long = kernel::GpuLinearHashtable::find_device_func<true, false, false, key_slice_type, size_type, value_type>;
+    using find_readonly_samehash4long = kernel::GpuLinearHashtable::find_device_func<false, true, true, key_slice_type, size_type, value_type>;
+    using find_readonly_hash4long = kernel::GpuLinearHashtable::find_device_func<false, true, false, key_slice_type, size_type, value_type>;
+    using find_readonly_prfx4long = kernel::GpuLinearHashtable::find_device_func<false, false, false, key_slice_type, size_type, value_type>;
     #define find_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values
     if (concurrent) {
-      if (use_hash_for_longkey) {
-        find_concurrent_hash4long func{find_args};
-        launch_batch_kernel(func, num_keys, stream);
+      if (use_hash_tag) {
+        if (tag_use_same_hash) {
+          find_concurrent_samehash4long func{find_args};
+          launch_batch_kernel(func, num_keys, stream);
+        }
+        else {
+          find_concurrent_hash4long func{find_args};
+          launch_batch_kernel(func, num_keys, stream);
+        }
       }
       else {
         find_concurrent_prfx4long func{find_args};
@@ -129,9 +138,15 @@ struct gpu_linearhashtable {
       }
     }
     else {
-      if (use_hash_for_longkey) {
-        find_readonly_hash4long func{find_args};
-        launch_batch_kernel(func, num_keys, stream);
+      if (use_hash_tag) {
+        if (tag_use_same_hash) {
+          find_concurrent_samehash4long func{find_args};
+          launch_batch_kernel(func, num_keys, stream);
+        }
+        else {
+          find_readonly_hash4long func{find_args};
+          launch_batch_kernel(func, num_keys, stream);
+        }
       }
       else {
         find_readonly_prfx4long func{find_args};
@@ -148,13 +163,21 @@ struct gpu_linearhashtable {
               const size_type num_keys,
               cudaStream_t stream = 0,
               bool update_if_exists = false,
-              bool use_hash_for_longkey = true) {
-    using insert_hash4long = kernel::GpuLinearHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using insert_prfx4long = kernel::GpuLinearHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
+              bool use_hash_tag = true,
+              bool tag_use_same_hash = true) {
+    using insert_samehash4long = kernel::GpuLinearHashtable::insert_device_func<true, true, key_slice_type, size_type, value_type>;
+    using insert_hash4long = kernel::GpuLinearHashtable::insert_device_func<true, false, key_slice_type, size_type, value_type>;
+    using insert_prfx4long = kernel::GpuLinearHashtable::insert_device_func<false, false, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists
-    if (use_hash_for_longkey) {
-      insert_hash4long func{insert_args};
-      launch_batch_kernel(func, num_keys, stream);
+    if (use_hash_tag) {
+      if (tag_use_same_hash) {
+        insert_samehash4long func{insert_args};
+        launch_batch_kernel(func, num_keys, stream);
+      }
+      else {
+        insert_hash4long func{insert_args};
+        launch_batch_kernel(func, num_keys, stream);
+      }
     }
     else {
       insert_prfx4long func{insert_args};
@@ -169,16 +192,25 @@ struct gpu_linearhashtable {
              const size_type num_keys,
              cudaStream_t stream = 0,
              bool do_merge = true,
-             bool use_hash_for_longkey = true) {
-    using erase_merge_hash4long = kernel::GpuLinearHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>;
-    using erase_merge_prfx4long = kernel::GpuLinearHashtable::erase_device_func<true, false, key_slice_type, size_type, value_type>;
-    using erase_nomerge_hash4long = kernel::GpuLinearHashtable::erase_device_func<false, true, key_slice_type, size_type, value_type>;
-    using erase_nomerge_prfx4long = kernel::GpuLinearHashtable::erase_device_func<false, false, key_slice_type, size_type, value_type>;
+             bool use_hash_tag = true,
+             bool tag_use_same_hash = true) {
+    using erase_merge_samehash4long = kernel::GpuLinearHashtable::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
+    using erase_merge_hash4long = kernel::GpuLinearHashtable::erase_device_func<true, true, false, key_slice_type, size_type, value_type>;
+    using erase_merge_prfx4long = kernel::GpuLinearHashtable::erase_device_func<true, false, false, key_slice_type, size_type, value_type>;
+    using erase_nomerge_samehash4long = kernel::GpuLinearHashtable::erase_device_func<false, true, true, key_slice_type, size_type, value_type>;
+    using erase_nomerge_hash4long = kernel::GpuLinearHashtable::erase_device_func<false, true, false, key_slice_type, size_type, value_type>;
+    using erase_nomerge_prfx4long = kernel::GpuLinearHashtable::erase_device_func<false, false, false, key_slice_type, size_type, value_type>;
     #define erase_args .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths
     if (do_merge) {
-      if (use_hash_for_longkey) {
-        erase_merge_hash4long func{erase_args};
-        launch_batch_kernel(func, num_keys, stream);
+      if (use_hash_tag) {
+        if (tag_use_same_hash) {
+          erase_merge_samehash4long func{erase_args};
+          launch_batch_kernel(func, num_keys, stream);
+        }
+        else {
+          erase_merge_hash4long func{erase_args};
+          launch_batch_kernel(func, num_keys, stream);
+        }
       }
       else {
         erase_merge_prfx4long func{erase_args};
@@ -186,9 +218,15 @@ struct gpu_linearhashtable {
       }
     }
     else {
-      if (use_hash_for_longkey) {
-        erase_nomerge_hash4long func{erase_args};
-        launch_batch_kernel(func, num_keys, stream);
+      if (use_hash_tag) {
+        if (tag_use_same_hash) {
+          erase_nomerge_hash4long func{erase_args};
+          launch_batch_kernel(func, num_keys, stream);
+        }
+        else {
+          erase_nomerge_hash4long func{erase_args};
+          launch_batch_kernel(func, num_keys, stream);
+        }
       }
       else {
         erase_nomerge_prfx4long func{erase_args};
@@ -209,24 +247,41 @@ struct gpu_linearhashtable {
                                     cudaStream_t stream = 0,
                                     bool insert_update_if_exists = false,
                                     bool erase_do_merge = true,
-                                    bool use_hash_for_longkey = true) {
-    using insert_hash4long = kernel::GpuLinearHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using insert_prfx4long = kernel::GpuLinearHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
-    using erase_merge_hash4long = kernel::GpuLinearHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>;
-    using erase_merge_prfx4long = kernel::GpuLinearHashtable::erase_device_func<true, false, key_slice_type, size_type, value_type>;
-    using erase_nomerge_hash4long = kernel::GpuLinearHashtable::erase_device_func<false, true, key_slice_type, size_type, value_type>;
-    using erase_nomerge_prfx4long = kernel::GpuLinearHashtable::erase_device_func<false, false, key_slice_type, size_type, value_type>;
+                                    bool use_hash_tag = true,
+                                    bool tag_use_same_hash = true) {
+    using insert_samehash4long = kernel::GpuLinearHashtable::insert_device_func<true, true, key_slice_type, size_type, value_type>;
+    using insert_hash4long = kernel::GpuLinearHashtable::insert_device_func<true, false, key_slice_type, size_type, value_type>;
+    using insert_prfx4long = kernel::GpuLinearHashtable::insert_device_func<false, false, key_slice_type, size_type, value_type>;
+    using erase_merge_samehash4long = kernel::GpuLinearHashtable::erase_device_func<true, true, true, key_slice_type, size_type, value_type>;
+    using erase_merge_hash4long = kernel::GpuLinearHashtable::erase_device_func<true, true, false, key_slice_type, size_type, value_type>;
+    using erase_merge_prfx4long = kernel::GpuLinearHashtable::erase_device_func<true, false, false, key_slice_type, size_type, value_type>;
+    using erase_nomerge_samehash4long = kernel::GpuLinearHashtable::erase_device_func<false, true, true, key_slice_type, size_type, value_type>;
+    using erase_nomerge_hash4long = kernel::GpuLinearHashtable::erase_device_func<false, true, false, key_slice_type, size_type, value_type>;
+    using erase_nomerge_prfx4long = kernel::GpuLinearHashtable::erase_device_func<false, false, false, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
     #define erase_args .d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths
-    if (use_hash_for_longkey) {
-      insert_hash4long insert_func{insert_args};
-      if (erase_do_merge) {
-        erase_merge_hash4long erase_func{erase_args};
-        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+    if (use_hash_tag) {
+      if (tag_use_same_hash) {
+        insert_samehash4long insert_func{insert_args};
+        if (erase_do_merge) {
+          erase_merge_samehash4long erase_func{erase_args};
+          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+        }
+        else {
+          erase_nomerge_samehash4long erase_func{erase_args};
+          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+        }
       }
       else {
-        erase_nomerge_hash4long erase_func{erase_args};
-        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+        insert_hash4long insert_func{insert_args};
+        if (erase_do_merge) {
+          erase_merge_hash4long erase_func{erase_args};
+          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+        }
+        else {
+          erase_nomerge_hash4long erase_func{erase_args};
+          launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+        }
       }
     }
     else {
@@ -255,17 +310,27 @@ struct gpu_linearhashtable {
                                    const size_type max_key_length,
                                    cudaStream_t stream = 0,
                                    bool insert_update_if_exists = false,
-                                   bool use_hash_for_longkey = true) {
-    using insert_hash4long = kernel::GpuLinearHashtable::insert_device_func<true, key_slice_type, size_type, value_type>;
-    using insert_prfx4long = kernel::GpuLinearHashtable::insert_device_func<false, key_slice_type, size_type, value_type>;
-    using find_concurrent_hash4long = kernel::GpuLinearHashtable::find_device_func<true, true, key_slice_type, size_type, value_type>;
-    using find_concurrent_prfx4long = kernel::GpuLinearHashtable::find_device_func<true, false, key_slice_type, size_type, value_type>;
+                                   bool use_hash_tag = true,
+                                   bool tag_use_same_hash = true) {
+    using insert_samehash4long = kernel::GpuLinearHashtable::insert_device_func<true, true, key_slice_type, size_type, value_type>;
+    using insert_hash4long = kernel::GpuLinearHashtable::insert_device_func<true, false, key_slice_type, size_type, value_type>;
+    using insert_prfx4long = kernel::GpuLinearHashtable::insert_device_func<false, false, key_slice_type, size_type, value_type>;
+    using find_concurrent_samehash4long = kernel::GpuLinearHashtable::find_device_func<true, true, true, key_slice_type, size_type, value_type>;
+    using find_concurrent_hash4long = kernel::GpuLinearHashtable::find_device_func<true, true, false, key_slice_type, size_type, value_type>;
+    using find_concurrent_prfx4long = kernel::GpuLinearHashtable::find_device_func<true, false, false, key_slice_type, size_type, value_type>;
     #define insert_args .d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists
     #define find_args .d_keys = find_keys, .max_key_length = max_key_length, .d_key_lengths = find_key_lengths, .d_values = find_values
-    if (use_hash_for_longkey) {
-      insert_hash4long insert_func{insert_args};
-      find_concurrent_hash4long find_func{find_args};
-      launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, find_func, find_num_keys, stream);
+    if (use_hash_tag) {
+      if (tag_use_same_hash) {
+        insert_samehash4long insert_func{insert_args};
+        find_concurrent_samehash4long find_func{find_args};
+        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, find_func, find_num_keys, stream);
+      }
+      else {
+        insert_hash4long insert_func{insert_args};
+        find_concurrent_hash4long find_func{find_args};
+        launch_batch_concurrent_two_funcs_kernel(insert_func, insert_num_keys, find_func, find_num_keys, stream);
+      }
     }
     else {
       insert_prfx4long insert_func{insert_args};
@@ -277,7 +342,7 @@ struct gpu_linearhashtable {
   }
 
   // device-side APIs
-  template <bool concurrent, bool use_hash_for_longkey, typename tile_type>
+  template <bool concurrent, bool use_hash_tag, bool tag_use_same_hash, typename tile_type>
   DEVICE_QUALIFIER value_type cooperative_find(const key_slice_type* key,
                                                size_type key_length,
                                                const tile_type& tile,
@@ -287,14 +352,14 @@ struct gpu_linearhashtable {
     key_slice_type first_slice;
     size_type bucket_index_hash;
     const bool more_key = (key_length > 1);
-    if (use_hash_for_longkey && more_key) {
+    if (use_hash_tag && !tag_use_same_hash && more_key) {
       auto hash = compute_hashx2(key, key_length, tile);
       bucket_index_hash = hash.x;
       first_slice = hash.y;
     }
     else {
       bucket_index_hash = compute_hash(key, key_length, tile);
-      first_slice = key[0];
+      first_slice = (tag_use_same_hash && more_key) ? bucket_index_hash : key[0];
     }
     size_type directory_size = d_global_state_->template load_directory_size<concurrent>();
     // find the bucket
@@ -302,7 +367,7 @@ struct gpu_linearhashtable {
     find_valid_bucket<concurrent>(node, bucket_index_hash, directory_size, tile, allocator);
     // search bucket
     suffix_type suffix_if_found(tile, allocator);
-    int location_if_found = coop_traverse_until_found<concurrent, use_hash_for_longkey>(
+    int location_if_found = coop_traverse_until_found<concurrent, use_hash_tag>(
         node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
     if (location_if_found >= 0) { // found
       if (more_key) {
@@ -316,7 +381,7 @@ struct gpu_linearhashtable {
     return invalid_value;
   }
 
-  template <bool use_hash_for_longkey, typename tile_type>
+  template <bool use_hash_tag, bool tag_use_same_hash, typename tile_type>
   DEVICE_QUALIFIER bool cooperative_insert(const key_slice_type* key,
                                            const size_type key_length,
                                            const value_type& value,
@@ -329,14 +394,14 @@ struct gpu_linearhashtable {
     key_slice_type first_slice;
     size_type bucket_index_hash;
     const bool more_key = (key_length > 1);
-    if (use_hash_for_longkey && more_key) {
+    if (use_hash_tag && !tag_use_same_hash && more_key) {
       auto hash = compute_hashx2(key, key_length, tile);
       bucket_index_hash = hash.x;
       first_slice = hash.y;
     }
     else {
       bucket_index_hash = compute_hash(key, key_length, tile);
-      first_slice = key[0];
+      first_slice = (tag_use_same_hash && more_key) ? bucket_index_hash : key[0];
     }
     size_type directory_size = d_global_state_->template load_directory_size<true>();
     const bool check_load_factor = (bucket_index_hash % check_load_factor_every == 0);
@@ -353,7 +418,7 @@ struct gpu_linearhashtable {
         continue;
       }
       suffix_type suffix_if_found(tile, allocator);
-      int location_if_found = coop_traverse_until_found<true, use_hash_for_longkey>(
+      int location_if_found = coop_traverse_until_found<true, use_hash_tag>(
         node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
       if (location_if_found >= 0) { // already exists
         if (update_if_exists) {
@@ -374,7 +439,7 @@ struct gpu_linearhashtable {
       if (more_key) {
         to_insert = allocator.allocate(tile);
         auto suffix = suffix_type(to_insert, tile, allocator);
-        static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
+        static constexpr uint32_t suffix_offset = use_hash_tag ? 0 : 1;
         suffix.create_from(key + suffix_offset, key_length - suffix_offset, value);
         suffix.store_head();
       }
@@ -418,11 +483,16 @@ struct gpu_linearhashtable {
               // decide new_node0 or new_node1
               uint32_t bucket_index_hash_at_loc;
               if (node.get_suffix_of_location(loc)) {
-                auto suffix_index = node.get_value_from_location(loc);
-                auto suffix = suffix_type(suffix_index, tile, allocator);
-                suffix.load_head();
-                bucket_index_hash_at_loc = compute_hash_for_suffix<use_hash_for_longkey>(
-                    suffix, use_hash_for_longkey ? 0 : node.get_key_from_location(loc), tile);
+                if constexpr (tag_use_same_hash) {
+                  bucket_index_hash_at_loc = node.get_key_from_location(loc);
+                }
+                else {
+                  auto suffix_index = node.get_value_from_location(loc);
+                  auto suffix = suffix_type(suffix_index, tile, allocator);
+                  suffix.load_head();
+                  bucket_index_hash_at_loc = compute_hash_for_suffix<use_hash_tag>(
+                      suffix, use_hash_tag ? 0 : node.get_key_from_location(loc), tile);
+                }
               }
               else {
                 bucket_index_hash_at_loc = compute_hash_single_slice(node.get_key_from_location(loc));
@@ -517,7 +587,7 @@ struct gpu_linearhashtable {
     assert(false);
   }
 
-  template <bool do_merge, bool use_hash_for_longkey, typename tile_type>
+  template <bool do_merge, bool use_hash_tag, bool tag_use_same_hash, typename tile_type>
   DEVICE_QUALIFIER bool cooperative_erase(const key_slice_type* key,
                                           const size_type key_length,
                                           const tile_type& tile,
@@ -528,14 +598,14 @@ struct gpu_linearhashtable {
     key_slice_type first_slice;
     size_type bucket_index_hash;
     const bool more_key = (key_length > 1);
-    if (use_hash_for_longkey && more_key) {
+    if (use_hash_tag && !tag_use_same_hash && more_key) {
       auto hash = compute_hashx2(key, key_length, tile);
       bucket_index_hash = hash.x;
       first_slice = hash.y;
     }
     else {
       bucket_index_hash = compute_hash(key, key_length, tile);
-      first_slice = key[0];
+      first_slice = (tag_use_same_hash && more_key) ? bucket_index_hash : key[0];
     }
     size_type directory_size = d_global_state_->template load_directory_size<true>();
     const bool check_load_factor = (bucket_index_hash % check_load_factor_every == 0);
@@ -555,11 +625,11 @@ struct gpu_linearhashtable {
       int location_if_found;
       suffix_type suffix_if_found(tile, allocator);
       if constexpr (do_merge) {
-        location_if_found = coop_traverse_until_found_merge<use_hash_for_longkey>(
+        location_if_found = coop_traverse_until_found_merge<use_hash_tag>(
           node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, reclaimer);
       }
       else {
-        location_if_found = coop_traverse_until_found<true, use_hash_for_longkey>(
+        location_if_found = coop_traverse_until_found<true, use_hash_tag>(
           node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
       }
       if (location_if_found >= 0) { // exists
@@ -690,7 +760,7 @@ struct gpu_linearhashtable {
     }
   }
 
-  template <bool concurrent, bool use_hash_for_longkey, typename tile_type>
+  template <bool concurrent, bool use_hash_tag, typename tile_type>
   DEVICE_QUALIFIER int coop_traverse_until_found(hashtable_node<tile_type, device_allocator_context_type>& node,
                                                  const key_slice_type& first_slice,
                                                  bool more_key,
@@ -710,7 +780,7 @@ struct gpu_linearhashtable {
           auto suffix_index = node.get_value_from_location(cur_location);
           auto suffix = suffix_type(suffix_index, tile, allocator);
           suffix.load_head();
-          static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
+          static constexpr uint32_t suffix_offset = use_hash_tag ? 0 : 1;
           if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
             // found
             suffix_if_found = suffix;
@@ -736,7 +806,7 @@ struct gpu_linearhashtable {
     return -1;
   }
 
-  template <bool use_hash_for_longkey, typename tile_type>
+  template <bool use_hash_tag, typename tile_type>
   DEVICE_QUALIFIER int coop_traverse_until_found_merge(hashtable_node<tile_type, device_allocator_context_type>& node,
                                                        const key_slice_type& first_slice,
                                                        bool more_key,
@@ -758,7 +828,7 @@ struct gpu_linearhashtable {
           auto suffix_index = node.get_value_from_location(cur_location);
           auto suffix = suffix_type(suffix_index, tile, allocator);
           suffix.load_head();
-          static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
+          static constexpr uint32_t suffix_offset = use_hash_tag ? 0 : 1;
           if (suffix.streq(key + suffix_offset, key_length - suffix_offset)) {
             // found
             suffix_if_found = suffix;
@@ -889,16 +959,16 @@ struct gpu_linearhashtable {
     uint32_t hash = ((key * hash_prime0) + 1) * hash_prime0;
     return hash_murmur3_finalizer(hash);
   }
-  template <bool use_hash_for_longkey, typename suffix_type, typename tile_type>
+  template <bool use_hash_tag, typename suffix_type, typename tile_type>
   DEVICE_QUALIFIER uint32_t compute_hash_for_suffix(const suffix_type& suffix,
                                                     const key_slice_type& first_slice,
                                                     const tile_type& tile) {
     // compute polynomial
     uint32_t hash = suffix.template compute_polynomial<hash_prime0>();
-    if constexpr (!use_hash_for_longkey) {
+    if constexpr (!use_hash_tag) {
       hash = (hash * hash_prime0) + first_slice;
     }
-    static constexpr uint32_t suffix_offset = use_hash_for_longkey ? 0 : 1;
+    static constexpr uint32_t suffix_offset = use_hash_tag ? 0 : 1;
     uint32_t key_length = suffix.get_key_length() + suffix_offset;
     hash = ((hash * hash_prime0) + key_length) * hash_prime0;
     // finalize
