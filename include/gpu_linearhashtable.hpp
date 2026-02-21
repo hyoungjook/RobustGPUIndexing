@@ -566,14 +566,16 @@ struct gpu_linearhashtable {
                 (resize_policy_ > 0) ? static_cast<size_type>(static_cast<float>(directory_size) * resize_policy_):
                                        (directory_size + static_cast<size_type>(-resize_policy_));
               new_directory_size = (new_directory_size + cg_tile_size - 1) / cg_tile_size * cg_tile_size;  // should be multiple of 32
-              allocator.reallocate_linear(new_directory_size, tile);
-              // invalidate new pointers
-              for (size_type bucket = directory_size; bucket < new_directory_size; bucket += 32) {
-                directory_entry_at(bucket + tile.thread_rank(), allocator) = invalid_pointer;
+              new_directory_size = allocator.reallocate_linear(new_directory_size, tile);
+              if (new_directory_size > curr_directory_size) {
+                // invalidate new pointers
+                for (size_type bucket = directory_size; bucket < new_directory_size; bucket += 32) {
+                  directory_entry_at(bucket + tile.thread_rank(), allocator) = invalid_pointer;
+                }
+                // publish new directory
+                directory_size = new_directory_size;
+                d_global_state_->template store_directory_size<true>(directory_size);
               }
-              // publish new directory
-              directory_size = new_directory_size;
-              d_global_state_->template store_directory_size<true>(directory_size);
             }
             else {
               directory_size = curr_directory_size;
@@ -1095,7 +1097,8 @@ struct gpu_linearhashtable {
     // global state, initial array
     if (bucket_index == 0) {
       *d_global_state_ = global_state(initial_directory_size_);
-      allocator.reallocate_linear(initial_directory_size_, tile);
+      auto resized = allocator.reallocate_linear(initial_directory_size_, tile);
+      assert(resized == initial_directory_size_);
     }
     // allocate node
     auto node_index = allocator.allocate(tile);

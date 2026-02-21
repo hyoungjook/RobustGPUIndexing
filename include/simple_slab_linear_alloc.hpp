@@ -111,6 +111,8 @@ struct device_allocator_context<simple_slab_linear_allocator<slab_size, max_byte
   using size_type = typename host_alloc_type::size_type;
   using pointer_type = typename host_alloc_type::pointer_type;
   using bitmap_type = typename host_alloc_type::bitmap_type;
+  using sizex2_type = uint64_t;
+  static_assert(sizeof(sizex2_type) == 2 * sizeof(size_type));
 
   template <typename tile_type>
   DEVICE_QUALIFIER device_allocator_context(const device_instance_type& alloc, const tile_type& tile)
@@ -137,15 +139,30 @@ struct device_allocator_context<simple_slab_linear_allocator<slab_size, max_byte
     if (slab_index % check_load_factor_every_ == (check_load_factor_every_ - 1)) {
       size_type num_slabs;
       if (tile.thread_rank() == 0) {
-        num_slabs = atomicAdd(&alloc_.counts_->num_slabs_, 1);
+        cuda::atomic_ref<size_type, cuda::thread_scope_device> num_slabs_ref(alloc_.counts_->num_slabs_);
+        num_slabs = num_slabs_ref.fetch_add(1, cuda::memory_order_relaxed);
       }
       num_slabs = tile.shfl(num_slabs, 0);
       if ((static_cast<float>(num_slabs) / alloc_.counts_->slab_block_count_ * (static_cast<float>(check_load_factor_every_) / num_slabs_in_block_)) > load_factor_threshold_) {
         // extend blocks
         if (tile.thread_rank() == 0) {
-
-          size_type old_num_blocks = atomicAdd(&alloc_.counts_->slab_block_count_, blocks_delta_);
-          assert(check_counters(old_num_blocks + blocks_delta_, alloc_.counts_->linear_count_));
+          cuda::atomic_ref<sizex2_type, cuda::thread_scope_device> two_counts_ref(
+              *reinterpret_cast<sizex2_type*>(&alloc_.counts_->slab_block_count_));
+          auto counters = two_counts_ref.load(cuda::memory_order_relaxed);
+          // re-compute load factor
+          if ((static_cast<float>(num_slabs) / static_cast<size_type>(counters) * (static_cast<float>(check_load_factor_every_) / num_slabs_in_block_)) > load_factor_threshold_) {
+            // check if adding delta is okay
+            auto new_num_block = min(
+                static_cast<size_type>(counters) + blocks_delta_,
+                total_blocks_ - ((static_cast<size_type>(counters >> 32) + linear_elems_per_block_ - 1) / linear_elems_per_block_));
+            if (new_num_block > static_cast<size_type>(counters)) {
+              auto new_counters = (counters & ~((static_cast<sizex2_type>(1) << 32) - 1)) | new_num_block;
+              two_counts_ref.compare_exchange_strong(counters, new_counters,
+                                                     cuda::memory_order_acquire,
+                                                     cuda::memory_order_relaxed);
+              // if failed, other warp's allocate() will do the extension, so no repeat
+            }
+          }
         }
       }
     }
@@ -166,7 +183,8 @@ struct device_allocator_context<simple_slab_linear_allocator<slab_size, max_byte
   DEVICE_QUALIFIER void deallocate_perlane_finish_sync(uint32_t sum, const tile_type& tile) {
     sum = cooperative_groups::reduce(tile, sum, cooperative_groups::plus<uint32_t>());
     if (tile.thread_rank() == 0) {
-      atomicSub(&alloc_.counts_->num_slabs_, sum);
+      cuda::atomic_ref<size_type, cuda::thread_scope_device> num_slabs_ref(alloc_.counts_->num_slabs_);
+      num_slabs_ref.fetch_sub(sum, cuda::memory_order_relaxed);
     }
   }
 
@@ -179,11 +197,29 @@ struct device_allocator_context<simple_slab_linear_allocator<slab_size, max_byte
   }
 
   template <typename tile_type>
-  DEVICE_QUALIFIER void reallocate_linear(size_type size, const tile_type& tile) {
+  DEVICE_QUALIFIER size_type reallocate_linear(size_type size, const tile_type& tile) {
     if (tile.thread_rank() == 0) {
-      auto old_size = atomicExch(&alloc_.counts_->linear_count_, size);
-      assert(check_counters(alloc_.counts_->slab_block_count_, size));
+      cuda::atomic_ref<sizex2_type, cuda::thread_scope_device> two_counts_ref(
+          *reinterpret_cast<sizex2_type*>(&alloc_.counts_->slab_block_count_));
+      auto counters = two_counts_ref.load(cuda::memory_order_relaxed);
+      while (true) {
+        if (static_cast<size_type>(counters >> 32) >= size) {
+          break;  // already enough
+        }
+        auto new_size = min(size,
+            (total_blocks_ - static_cast<size_type>(counters)) * linear_elems_per_block_);
+        auto new_counters = (counters & ((static_cast<sizex2_type>(1) << 32) - 1)) |
+                            (static_cast<sizex2_type>(new_size) << 32);
+        // try update
+        if (two_counts_ref.compare_exchange_strong(counters, new_counters,
+                                                   cuda::memory_order_acquire,
+                                                   cuda::memory_order_relaxed)) {
+          size = new_size;
+          break;
+        }
+      }
     }
+    return tile.shfl(size, 0);
   }
 
 private:
@@ -240,7 +276,8 @@ private:
         uint32_t src_lane = __ffs(free_lane) - 1;
         if (src_lane == tile.thread_rank()) {
           bitmap_type mask = static_cast<bitmap_type>(1) << empty_lane;
-          bitmap = atomicOr(bitmap_addr, mask);
+          cuda::atomic_ref<bitmap_type, cuda::thread_scope_device> bitmap_ref(*bitmap_addr);
+          bitmap = bitmap_ref.fetch_or(mask, cuda::memory_order_relaxed);
           if ((bitmap & mask) == 0) {
             // atomically acquired the bit
             result = empty_lane + src_lane * sizeof(bitmap_type) * 8;
@@ -263,6 +300,7 @@ private:
     bitmap_type* bitmap_addr =
         reinterpret_cast<bitmap_type*>(bitmap_base) + bitmap_index;
     bitmap_type mask = static_cast<bitmap_type>(1) << bit_index;
-    atomicAnd(bitmap_addr, ~mask);
+    cuda::atomic_ref<bitmap_type, cuda::thread_scope_device> bitmap_ref(*bitmap_addr);
+    bitmap_ref.fetch_and(~mask, cuda::memory_order_relaxed);
   }
 };

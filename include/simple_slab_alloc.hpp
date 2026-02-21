@@ -113,6 +113,7 @@ struct device_allocator_context<simple_slab_allocator<slab_size, max_bytes>> {
   }
   DEVICE_QUALIFIER uint32_t deallocate_perlane(pointer_type p) {
     deallocate_in_block(p);
+    return 0;
   }
   template <typename tile_type>
   DEVICE_QUALIFIER void deallocate_perlane_finish_sync(uint32_t sum, const tile_type& tile) noexcept {}
@@ -164,7 +165,8 @@ private:
         uint32_t src_lane = __ffs(free_lane) - 1;
         if (src_lane == tile.thread_rank()) {
           bitmap_type mask = static_cast<bitmap_type>(1) << empty_lane;
-          bitmap = atomicOr(bitmap_addr, mask);
+          cuda::atomic_ref<bitmap_type, cuda::thread_scope_device> bitmap_ref(*bitmap_addr);
+          bitmap = bitmap_ref.fetch_or(mask, cuda::memory_order_relaxed);
           if ((bitmap & mask) == 0) {
             // atomically acquired the bit
             result = empty_lane + src_lane * sizeof(bitmap_type) * 8;
@@ -187,7 +189,8 @@ private:
     bitmap_type* bitmap_addr =
         reinterpret_cast<bitmap_type*>(bitmap_base) + bitmap_index;
     bitmap_type mask = static_cast<bitmap_type>(1) << bit_index;
-    atomicAnd(bitmap_addr, ~mask);
+    cuda::atomic_ref<bitmap_type, cuda::thread_scope_device> bitmap_ref(*bitmap_addr);
+    bitmap_ref.fetch_and(~mask, cuda::memory_order_relaxed);
   }
 };
 

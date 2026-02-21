@@ -87,7 +87,7 @@ struct device_allocator_context<simple_bump_allocator<slab_size, max_bytes>> {
 
   template <typename tile_type>
   DEVICE_QUALIFIER void deallocate_coop(pointer_type p, const tile_type& tile) noexcept {}
-  DEVICE_QUALIFIER uint32_t deallocate_perlane(pointer_type p) noexcept {}
+  DEVICE_QUALIFIER uint32_t deallocate_perlane(pointer_type p) noexcept { return 0; }
   template <typename tile_type>
   DEVICE_QUALIFIER void deallocate_perlane_finish_sync(uint32_t sum, const tile_type& tile) noexcept {}
 
