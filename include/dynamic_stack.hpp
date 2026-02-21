@@ -71,7 +71,7 @@ struct dynamic_stack_u32 {
         assert(old_head != invalid_index);
         auto* node_ptr = reinterpret_cast<stack_node*>(allocator_.address(old_head));
         read_register_from_node(i, node_ptr);
-        allocator_.deallocate(old_head);
+        allocator_.deallocate_coop(old_head, tile_);
       }
       top_ = node_capacity_ - 1;
     }
@@ -87,7 +87,7 @@ struct dynamic_stack_u32 {
       while (head != invalid_index) {
         auto node_ptr = reinterpret_cast<stack_node*>(allocator_.address(head));
         auto next = node_ptr->get_next();
-        allocator_.deallocate(head);
+        allocator_.deallocate_coop(head, tile_);
         head = next;
       }
     }

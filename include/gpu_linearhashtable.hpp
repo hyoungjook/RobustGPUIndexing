@@ -34,6 +34,7 @@
 
 #include <dynamic_stack.hpp>
 #include <simple_bump_linear_alloc.hpp>
+#include <simple_slab_linear_alloc.hpp>
 #include <simple_dummy_reclaim.hpp>
 #include <simple_debra_reclaim.hpp>
 

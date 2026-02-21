@@ -241,9 +241,10 @@ private:
     #endif
     // free pointers in shared memory
     auto count_in_shmem = min(total_count, shmem_size_per_bag_);
+    uint32_t dealloc_sum = 0;
     for (uint32_t i = tile.thread_rank(); i < count_in_shmem; i += tile.size()) {
       auto address = limbo_bags()[cur_bag * shmem_size_per_bag_ + i];
-      allocator.deallocate(address);
+      dealloc_sum += allocator.deallocate_perlane(address);
     }
     // free pointers in global memory
     if (total_count > shmem_size_per_bag_) {
@@ -253,10 +254,10 @@ private:
             (buffer_size_per_active_block_ / num_bags_) * cur_bag;
       for (uint32_t i = tile.thread_rank(); i < count_in_gmem; i += tile.size()) {
         auto address = reclaimer_.announce_[announce_offset + i];
-        allocator.deallocate(address);
+        dealloc_sum += allocator.deallocate_perlane(address);
       }
     }
-    tile.sync();
+    allocator.deallocate_perlane_finish_sync(dealloc_sum, tile);
     // reset the counter
     if (tile.thread_rank() == 0) {
       count_per_bag()[cur_bag] = 0;

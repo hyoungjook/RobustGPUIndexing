@@ -86,7 +86,7 @@ struct device_allocator_context<simple_bump_linear_allocator<slab_size, max_byte
     pointer_type new_slab_index;
     if (tile.thread_rank() == 0) {
       new_slab_index = atomicAdd(&alloc_.count_->slab_count_, 1);
-      assert(new_slab_index + alloc_.count_->linear_count_ <= max_count_);
+      assert(check_counters(new_slab_index + 1, alloc_.count_->linear_count_));
     }
     return tile.shfl(new_slab_index, 0);
   }
@@ -105,7 +105,7 @@ struct device_allocator_context<simple_bump_linear_allocator<slab_size, max_byte
   DEVICE_QUALIFIER void reallocate_linear(size_type size, const tile_type& tile) {
     if (tile.thread_rank() == 0) {
       atomicExch(&alloc_.count_->linear_count_, size);
-      assert(alloc_.count_->slab_count_ + size <= max_count_);
+      assert(check_counters(alloc_.count_->slab_count_ + size));
     }
   }
 
@@ -113,7 +113,12 @@ private:
   static constexpr uint32_t slab_size_ = host_alloc_type::slab_size_;
   static constexpr std::size_t max_count_ = host_alloc_type::max_count_;
   static_assert(max_count_ <= std::numeric_limits<pointer_type>::max());
+  static constexpr uint32_t linear_elems_per_slab_ = slab_size_ / sizeof(size_type);
   struct slab_type { uint8_t _[slab_size_]; };
 
   const device_instance_type& alloc_;
+
+  static DEVICE_QUALIFIER bool check_counters(size_type slab_count, size_type linear_count) {
+    return (slab_count + ((linear_count + linear_elems_per_slab_ - 1) / linear_elems_per_slab_) <= max_count_);
+  }
 };

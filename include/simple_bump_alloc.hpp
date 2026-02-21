@@ -85,7 +85,11 @@ struct device_allocator_context<simple_bump_allocator<slab_size, max_bytes>> {
     return tile.shfl(new_slab_index, 0);
   }
 
-  DEVICE_QUALIFIER void deallocate(pointer_type p) noexcept {}
+  template <typename tile_type>
+  DEVICE_QUALIFIER void deallocate_coop(pointer_type p, const tile_type& tile) noexcept {}
+  DEVICE_QUALIFIER uint32_t deallocate_perlane(pointer_type p) noexcept {}
+  template <typename tile_type>
+  DEVICE_QUALIFIER void deallocate_perlane_finish_sync(uint32_t sum, const tile_type& tile) noexcept {}
 
   DEVICE_QUALIFIER void* address(pointer_type p) const {
     return reinterpret_cast<void*>(reinterpret_cast<slab_type*>(alloc_.pool_) + p);

@@ -210,10 +210,11 @@ int main(int argc, char** argv) {
   std::cout << "max_key_length = " << max_key_length << ", ";
   std::cout << "common_prefix_ratio = " << common_prefix_ratio << std::endl;
   using simple_bump_linear_alloc_type = simple_bump_linear_allocator<128>;
+  using simple_slab_linear_alloc_type = simple_slab_linear_allocator<128>;
   using simple_dummy_reclaim_type = simple_dummy_reclaimer;
   using simple_debra_reclaim_type = simple_debra_reclaimer<131072>;
-  using linearhashtable_slab_type = GpuLinearHashtable::gpu_linearhashtable<simple_bump_linear_alloc_type, simple_dummy_reclaim_type>;
-  using linearhashtable_slab_reclaim_type = GpuLinearHashtable::gpu_linearhashtable<simple_bump_linear_alloc_type, simple_debra_reclaim_type>;
+  using linearhashtable_slab_type = GpuLinearHashtable::gpu_linearhashtable<simple_slab_linear_alloc_type, simple_dummy_reclaim_type>;
+  using linearhashtable_slab_reclaim_type = GpuLinearHashtable::gpu_linearhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type>;
 
   std::cout << "Benchmarking linearhashtable_slab_reclaim_type no-merge prefix4longkey" << std::endl;
   bench_linearhashtable_insertion_erase<linearhashtable_slab_reclaim_type, false, false, false>(
