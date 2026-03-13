@@ -873,8 +873,7 @@ struct masstree_node {
       uint32_t keystate = tile_.shfl(keystate_, get_key_lane_from_location(i));
       if (keystate == KEYSTATE_SUFFIX) {
         elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
-        auto suffix = suffix_node<tile_type, allocator_type>(
-            reinterpret_cast<elem_type*>(allocator_.address(suffix_index)), suffix_index, tile_, allocator_);
+        auto suffix = suffix_node<tile_type, allocator_type>(suffix_index, tile_, allocator_);
         suffix.load_head();
         suffix.print();
       }

@@ -613,6 +613,114 @@ void test_scan(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_le
   input.free();
 }
 
+template <typename map_type>
+void test_concurrentmix(map_type* map, uint32_t min_key_length_bytes, uint32_t max_key_length_bytes) {
+  const size_type min_key_length = min_key_length_bytes / sizeof(key_slice_type);
+  const size_type max_key_length = max_key_length_bytes / sizeof(key_slice_type);
+  mapped_vector<value_type> find_results(num_keys);
+  testing_input input(num_keys, min_key_length, max_key_length);
+  input.shuffle();
+  // keys: [A: num_keys/4][B: num_keys/4][C: num_keys/4][D: num_keys/4]
+  std::size_t num_keyset = num_keys / 4;
+  std::size_t offset_keysetB = num_keyset;
+  std::size_t offset_keysetC = 2 * num_keyset;
+  std::size_t offset_keysetD = 3 * num_keyset;
+  // at step 2, we will execute concurrent mix of:
+  //    - insert A, C
+  //    - find A, B, C, D
+  //    - erase B, D
+  std::size_t mix_num_requests = 8 * num_keyset;
+  mapped_vector<kernels::request_type> mix_types(mix_num_requests);
+  mapped_vector<key_slice_type> mix_keys(mix_num_requests * max_key_length);
+  mapped_vector<size_type> mix_lengths(mix_num_requests);
+  mapped_vector<value_type> mix_values(mix_num_requests);
+  mapped_vector<bool> mix_results(mix_num_requests);
+  std::vector<std::size_t> shuffle_order(mix_num_requests);
+  std::vector<std::size_t> shuffle_order_inverse(mix_num_requests);
+  for (std::size_t i = 0; i < mix_num_requests; i++) { shuffle_order[i] = i; }
+  std::mt19937 rng(0);
+  std::shuffle(shuffle_order.begin(), shuffle_order.end(), rng);
+  auto fill_requests = [&](std::size_t dst_begin, std::size_t src_begin,
+                           kernels::request_type type) {
+    for (std::size_t i = 0; i < num_keyset; i++) {
+      auto src_i = src_begin + i;
+      auto dst_i = dst_begin + i;
+      auto shuffled_dst_i = shuffle_order[dst_i];
+      mix_types[shuffled_dst_i] = type;
+      for (uint32_t s = 0; s < max_key_length; s++) {
+        mix_keys[shuffled_dst_i * max_key_length + s] = input.keys[src_i * max_key_length + s];
+      }
+      mix_lengths[shuffled_dst_i] = input.lengths[src_i];
+      if (type == kernels::request_type_insert) { mix_values[shuffled_dst_i] = input.values[src_i]; }
+      else { mix_values[shuffled_dst_i] = invalid_value; }
+      mix_results[shuffled_dst_i] = false;
+      shuffle_order_inverse[shuffled_dst_i] = dst_i;
+    }
+  };
+  fill_requests(0, 0, kernels::request_type_insert);
+  fill_requests(num_keyset, offset_keysetC, kernels::request_type_insert);
+  fill_requests(2 * num_keyset, 0, kernels::request_type_find);
+  fill_requests(3 * num_keyset, offset_keysetB, kernels::request_type_find);
+  fill_requests(4 * num_keyset, offset_keysetC, kernels::request_type_find);
+  fill_requests(5 * num_keyset, offset_keysetD, kernels::request_type_find);
+  fill_requests(6 * num_keyset, offset_keysetB, kernels::request_type_erase);
+  fill_requests(7 * num_keyset, offset_keysetD, kernels::request_type_erase);
+  // 1. insert A, B
+  map->insert(input.keys.data(), max_key_length, input.lengths.data(), input.values.data(), 2 * num_keyset);
+  cuda_try(cudaDeviceSynchronize());
+  // 2. concurrent mix
+  map->mixed_batch(mix_types.data(), mix_keys.data(), max_key_length, mix_lengths.data(), mix_values.data(), mix_results.data(), mix_num_requests);
+  cuda_try(cudaDeviceSynchronize());
+  // on order before shuffle, result should be:
+  //    [insert A: fail][insert C: success]
+  //    [find A: exist][find B: ??][find C: ??][find D: not exist]
+  //    [erase B: success][erase D: fail]
+  for (std::size_t i = 0; i < mix_num_requests; i++) {
+    std::size_t dst_i = shuffle_order_inverse[i];
+    if (dst_i < 2 * num_keyset) {
+      ASSERT_EQ(mix_types[i], kernels::request_type_insert);
+      auto expected_result = (dst_i < num_keyset) ? false : true;
+      auto found_result = mix_results[i];
+      ASSERT_EQ(expected_result, found_result);
+    }
+    else if (dst_i < 6 * num_keyset) {
+      ASSERT_EQ(mix_types[i], kernels::request_type_find);
+      if (dst_i < 3 * num_keyset) {
+        auto expected_result = input.values[dst_i - 2 * num_keyset];
+        auto found_result = mix_values[i];
+        ASSERT_EQ(expected_result, found_result);
+      }
+      else if (5 * num_keyset <= dst_i) {
+        auto expected_result = invalid_value;
+        auto found_result = mix_values[i];
+        ASSERT_EQ(expected_result, found_result);
+      }
+    }
+    else {
+      ASSERT_EQ(mix_types[i], kernels::request_type_erase);
+      auto expected_result = (dst_i < 7 * num_keyset) ? true : false;
+      auto found_result = mix_results[i];
+      ASSERT_EQ(expected_result, found_result);
+    }
+  }
+  // 3. find all
+  map->find(input.keys.data(), max_key_length, input.lengths.data(), find_results.data(), 4 * num_keyset);
+  cuda_try(cudaDeviceSynchronize());
+  // A, C should exist; B, D should not
+  for (std::size_t i = 0; i < 4 * num_keyset; i++) {
+    auto expected_value = (i < num_keyset || (2 * num_keyset <= i && i < 3 * num_keyset)) ? input.values[i] : invalid_value;
+    auto found_value    = find_results[i];
+    ASSERT_EQ(found_value, expected_value);
+  }
+  find_results.free();
+  input.free();
+  mix_types.free();
+  mix_keys.free();
+  mix_lengths.free();
+  mix_values.free();
+  mix_results.free();
+}
+
 #define DECLARE_TESTS_FOR_KEY_LENGTHS(min_length, max_length) \
 TYPED_TEST(MapTest, Validate##min_length##_##max_length) { \
   validate(this->map_, min_length, max_length); \
@@ -652,6 +760,9 @@ TYPED_TEST(MapTest, ConcurrentEraseFind##min_length##_##max_length) { \
 } \
 TYPED_TEST(MapTest, RangeQuery##min_length##_##max_length) { \
   test_scan(this->map_, min_length, max_length); \
+} \
+TYPED_TEST(MapTest, ConcurrentMix##min_length##_##max_length) { \
+  test_concurrentmix(this->map_, min_length, max_length); \
 }
 
 DECLARE_TESTS_FOR_KEY_LENGTHS(4, 4)

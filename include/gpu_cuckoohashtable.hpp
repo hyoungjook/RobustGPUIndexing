@@ -112,9 +112,9 @@ struct gpu_cuckoohashtable {
             value_type* values,
             const size_type num_keys,
             cudaStream_t stream = 0) {
-    kernel::GpuHashtable::find_device_func<concurrent, use_hash_tag, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::find_device_func<concurrent, use_hash_tag, key_slice_type, size_type, value_type>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
-    kernel::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
 
   template <bool use_hash_tag = true>
@@ -125,9 +125,9 @@ struct gpu_cuckoohashtable {
               const size_type num_keys,
               cudaStream_t stream = 0,
               bool update_if_exists = false) {
-    kernel::GpuHashtable::insert_device_func<use_hash_tag, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::insert_device_func<use_hash_tag, key_slice_type, size_type, value_type>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists};
-    kernel::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
 
   template <bool use_hash_tag = true, bool _ = true>
@@ -136,9 +136,9 @@ struct gpu_cuckoohashtable {
              const size_type* key_lengths,
              const size_type num_keys,
              cudaStream_t stream = 0) {
-    kernel::GpuHashtable::erase_device_func<use_hash_tag, true, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::erase_device_func<use_hash_tag, true, key_slice_type, size_type, value_type>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
-    kernel::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
 
   void test_concurrent_insert_erase(const key_slice_type* insert_keys,
@@ -151,11 +151,11 @@ struct gpu_cuckoohashtable {
                                     const size_type max_key_length,
                                     cudaStream_t stream = 0,
                                     bool insert_update_if_exists = false) {
-    kernel::GpuHashtable::insert_device_func<true, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::insert_device_func<true, key_slice_type, size_type, value_type>
       insert_func{.d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists};
-    kernel::GpuHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>
       erase_func{.d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths};
-    kernel::launch_batch_concurrent_two_funcs_kernel(*this, insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
+    kernels::launch_batch_concurrent_two_funcs_kernel(*this, insert_func, insert_num_keys, erase_func, erase_num_keys, stream);
   }
 
   void test_concurrent_insert_find(const key_slice_type* insert_keys,
@@ -169,11 +169,11 @@ struct gpu_cuckoohashtable {
                                    const size_type max_key_length,
                                    cudaStream_t stream = 0,
                                    bool insert_update_if_exists = false) {
-    kernel::GpuHashtable::insert_device_func<true, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::insert_device_func<true, key_slice_type, size_type, value_type>
       insert_func{.d_keys = insert_keys, .max_key_length = max_key_length, .d_key_lengths = insert_key_lengths, .d_values = insert_values, .update_if_exists = insert_update_if_exists};
-    kernel::GpuHashtable::find_device_func<true, true, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::find_device_func<true, true, key_slice_type, size_type, value_type>
       find_func{.d_keys = find_keys, .max_key_length = max_key_length, .d_key_lengths = find_key_lengths, .d_values = find_values};
-    kernel::launch_batch_concurrent_two_funcs_kernel(*this, insert_func, insert_num_keys, find_func, find_num_keys, stream);
+    kernels::launch_batch_concurrent_two_funcs_kernel(*this, insert_func, insert_num_keys, find_func, find_num_keys, stream);
   }
 
   void test_concurrent_erase_find(const key_slice_type* erase_keys,
@@ -185,11 +185,11 @@ struct gpu_cuckoohashtable {
                                   const size_type find_num_keys,
                                   const size_type max_key_length,
                                   cudaStream_t stream = 0) {
-    kernel::GpuHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::erase_device_func<true, true, key_slice_type, size_type, value_type>
       erase_func{.d_keys = erase_keys, .max_key_length = max_key_length, .d_key_lengths = erase_key_lengths};
-    kernel::GpuHashtable::find_device_func<true, true, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::find_device_func<true, true, key_slice_type, size_type, value_type>
       find_func{.d_keys = find_keys, .max_key_length = max_key_length, .d_key_lengths = find_key_lengths, .d_values = find_values};
-    kernel::launch_batch_concurrent_two_funcs_kernel(*this, erase_func, erase_num_keys, find_func, find_num_keys, stream);
+    kernels::launch_batch_concurrent_two_funcs_kernel(*this, erase_func, erase_num_keys, find_func, find_num_keys, stream);
   }
 
   // device-side APIs
@@ -616,7 +616,7 @@ struct gpu_cuckoohashtable {
 
   template <typename func>
   void traverse_nodes(func task) {
-    kernel::GpuHashtable::traverse_nodes_kernel<<<1, 32>>>(*this, task);
+    kernels::GpuHashtable::traverse_nodes_kernel<<<1, 32>>>(*this, task);
     cudaDeviceSynchronize();
   }
 
@@ -705,7 +705,7 @@ struct gpu_cuckoohashtable {
   void initialize() {
     const uint32_t num_blocks = num_buckets_per_hf_ * num_hfs;
     const uint32_t block_size = cg_tile_size;
-    kernel::GpuHashtable::initialize_kernel<<<num_blocks, block_size>>>(*this);
+    kernels::GpuHashtable::initialize_kernel<<<num_blocks, block_size>>>(*this);
     cuda_try(cudaDeviceSynchronize());
     cuda_try(cudaMemset(d_versions_, 0, sizeof(size_type) * version_counter_size));
   }
@@ -718,15 +718,15 @@ struct gpu_cuckoohashtable {
   device_reclaimer_instance_type reclaimer_;
 
   template <typename hashtable>
-  friend __global__ void kernel::GpuHashtable::initialize_kernel(hashtable);
+  friend __global__ void kernels::GpuHashtable::initialize_kernel(hashtable);
 
   template <bool do_reclaim, typename device_func, typename index_type>
-  friend __global__ void kernel::batch_kernel(index_type index,
+  friend __global__ void kernels::batch_kernel(index_type index,
                                               const device_func func,
                                               uint32_t num_requests);
 
   template <bool do_reclaim, typename device_func0, typename device_func1, typename index_type>
-  friend __global__ void kernel::batch_concurrent_two_funcs_kernel(index_type tree,
+  friend __global__ void kernels::batch_concurrent_two_funcs_kernel(index_type tree,
                                                                    const device_func0 func0,
                                                                    uint32_t num_requests0,
                                                                    const device_func1 func1,

@@ -23,7 +23,13 @@
 #include <simple_debra_reclaim.hpp>
 
 namespace cg = cooperative_groups;
-namespace kernel {
+namespace kernels {
+
+enum request_type: uint8_t {
+  request_type_insert = 0,
+  request_type_erase = 1,
+  request_type_find = 2
+};
 
 static constexpr auto target_blocks_per_sm = 8;
 
@@ -140,14 +146,14 @@ void launch_batch_kernel(index_type& index, const device_func& func, uint32_t nu
   int num_blocks_per_sm;
   cudaOccupancyMaxActiveBlocksPerMultiprocessor(
     &num_blocks_per_sm,
-    kernel::batch_kernel<do_reclaim, device_func, index_type>,
+    kernels::batch_kernel<do_reclaim, device_func, index_type>,
     block_size,
     shmem_size);
   cudaDeviceProp device_prop;
   cudaGetDeviceProperties(&device_prop, 0);
   uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
 
-  kernel::batch_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
+  kernels::batch_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
       index, func, num_requests);
 }
 
@@ -159,14 +165,14 @@ void launch_batch_concurrent_two_funcs_kernel(index_type& index,const device_fun
   int num_blocks_per_sm;
   cudaOccupancyMaxActiveBlocksPerMultiprocessor(
     &num_blocks_per_sm,
-    kernel::batch_concurrent_two_funcs_kernel<do_reclaim, device_func0, device_func1, index_type>,
+    kernels::batch_concurrent_two_funcs_kernel<do_reclaim, device_func0, device_func1, index_type>,
     block_size,
     shmem_size);
   cudaDeviceProp device_prop;
   cudaGetDeviceProperties(&device_prop, 0);
   uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
     
-  kernel::batch_concurrent_two_funcs_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
+  kernels::batch_concurrent_two_funcs_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
       index, func0, num_requests0, func1, num_requests1);
 }
 
@@ -336,6 +342,72 @@ struct scan_device_func {
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
     if (d_counts) { d_counts[thread_id] = regs.count; }
+  }
+};
+
+template <bool enable_suffix,
+          bool erase_do_merge,
+          bool erase_do_remove_empty_root,
+          typename key_slice_type,
+          typename size_type,
+          typename value_type>
+struct mixed_device_func {
+  static constexpr bool reclaim_required = true;
+  // kernel args
+  const request_type* d_types;
+  const key_slice_type* d_keys;
+  size_type max_key_length;
+  const size_type* d_key_lengths;
+  value_type* d_values;
+  bool* d_results;
+  bool insert_update_if_exists;
+  // device-side registers
+  struct dev_regs {
+    request_type type;
+    const key_slice_type* key;
+    size_type key_length;
+    value_type value;
+    bool result;
+  };
+  // device-side functions
+  template <typename tile_type>
+  DEVICE_QUALIFIER dev_regs load(uint32_t thread_id, tile_type& tile) const {
+    return dev_regs{
+      .type = d_types[thread_id],
+      .key = &d_keys[max_key_length * thread_id],
+      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
+      .value = d_values[thread_id]
+    };
+  }
+  template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
+  DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
+    auto cur_type = tile.shfl(regs.type, cur_rank);
+    auto cur_key = tile.shfl(regs.key, cur_rank);
+    auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+    if (cur_type == request_type_insert) {
+      auto cur_value = tile.shfl(regs.value, cur_rank);
+      auto cur_result = tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists);
+      if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
+    }
+    else if (cur_type == request_type_find) {
+      auto cur_value = tree.template cooperative_find<true>(cur_key, cur_key_length, tile, allocator);
+      if (tile.thread_rank() == cur_rank) { regs.value = cur_value; }
+    }
+    else if (cur_type == request_type_erase) {
+      auto cur_result = tree.template cooperative_erase<true, erase_do_merge, erase_do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
+      if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
+    }
+    else {  // request_type_successor
+      assert(false); // TODO
+    }
+  }
+  DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
+    if (regs.type <= request_type_erase) {  // insert of erase
+      if (d_results) { d_results[thread_id] = regs.result; }
+    }
+    else {  // find or successor
+      d_values[thread_id] = regs.value;
+    }
   }
 };
 
@@ -603,4 +675,4 @@ __global__ void traverse_nodes_kernel(hashtable table, func task) {
 
 } // namespace GpuLinearHashtable
 
-} // namespace kernel
+} // namespace kernels
