@@ -134,8 +134,10 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
     assert(block.size() == block_size_);
     buffer_size_per_active_block_ = reclaimer_.buffer_size_ / num_active_blocks_;
     // initialize shmem buffer to all zero
-    for (uint32_t i = block.thread_rank(); i < required_shmem_size(); i += block_size_) {
-      shmem_buffer[i] = 0;
+    if (shmem_buffer) {
+      for (uint32_t i = block.thread_rank(); i < required_shmem_size(); i += block_size_) {
+        shmem_buffer[i] = 0;
+      }
     }
     block.sync();
   }

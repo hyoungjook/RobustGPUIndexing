@@ -47,7 +47,7 @@ __global__ void batch_kernel(index_type index,
   auto block_wide_tile = cg::tiled_partition<reclaimer_type::block_size_>(block);
   extern __shared__ uint32_t reclaimer_shmem_buffer[];
   reclaimer_type reclaimer{index.reclaimer_,
-                           (reclaimer_type::required_shmem_size() > 0) ? &reclaimer_shmem_buffer[0] : nullptr,
+                           (do_reclaim && reclaimer_type::required_shmem_size() > 0) ? &reclaimer_shmem_buffer[0] : nullptr,
                            gridDim.x,
                            block_wide_tile};
   uint32_t block_size = blockDim.x;
@@ -89,7 +89,7 @@ __global__ void batch_concurrent_two_funcs_kernel(index_type index,
   auto block_wide_tile = cg::tiled_partition<reclaimer_type::block_size_>(block);
   extern __shared__ uint32_t reclaimer_shmem_buffer[];
   reclaimer_type reclaimer{index.reclaimer_,
-                           (reclaimer_type::required_shmem_size() > 0) ? &reclaimer_shmem_buffer[0] : nullptr,
+                           (do_reclaim && reclaimer_type::required_shmem_size() > 0) ? &reclaimer_shmem_buffer[0] : nullptr,
                            gridDim.x,
                            block_wide_tile};
   // even'th tile -> do func0, odd'th tile -> do func1
@@ -142,7 +142,7 @@ template <typename index_type, typename device_func>
 void launch_batch_kernel(index_type& index, const device_func& func, uint32_t num_requests, cudaStream_t stream) {
   static constexpr bool do_reclaim = device_func::reclaim_required;
   int block_size = index_type::host_reclaimer_type::block_size_;
-  std::size_t shmem_size = sizeof(uint32_t) * index_type::device_reclaimer_context_type::required_shmem_size();
+  std::size_t shmem_size = do_reclaim ? sizeof(uint32_t) * index_type::device_reclaimer_context_type::required_shmem_size() : 0;
   int num_blocks_per_sm;
   cudaOccupancyMaxActiveBlocksPerMultiprocessor(
     &num_blocks_per_sm,
@@ -161,7 +161,7 @@ template <typename index_type, typename device_func0, typename device_func1>
 void launch_batch_concurrent_two_funcs_kernel(index_type& index,const device_func0& func0, uint32_t num_requests0, const device_func1& func1, uint32_t num_requests1, cudaStream_t stream) {
   static constexpr bool do_reclaim = device_func0::reclaim_required || device_func1::reclaim_required;
   int block_size = index_type::host_reclaimer_type::block_size_;
-  std::size_t shmem_size = sizeof(uint32_t) * index_type::device_reclaimer_context_type::required_shmem_size();
+  std::size_t shmem_size = do_reclaim ? sizeof(uint32_t) * index_type::device_reclaimer_context_type::required_shmem_size() : 0;
   int num_blocks_per_sm;
   cudaOccupancyMaxActiveBlocksPerMultiprocessor(
     &num_blocks_per_sm,
