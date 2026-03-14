@@ -41,6 +41,7 @@ template <typename masstree_type,
           bool find_concurrent = false,
           bool find_reuse_root = true,
           bool successor_concurrent = false,
+          bool successor_reuse_root = true,
           bool erase_remove_empty_root = true,
           bool erase_merge = true,
           bool erase_concurrent = true>
@@ -93,7 +94,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
 
     gpu_timer successor_timer;
     successor_timer.start_timer();
-    tree.template scan<false, successor_concurrent>(
+    tree.template scan<false, successor_concurrent, successor_reuse_root>(
       d_query_keys.data().get(), d_query_lengths.data().get(),
       max_key_length, max_counts_per_query, num_keys,
       nullptr, nullptr, nullptr, d_query_results.data().get(), nullptr, nullptr);

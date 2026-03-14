@@ -303,7 +303,7 @@ struct masstree_node {
   }
 
   // lexicographic comparisons for key entries
-  DEVICE_QUALIFIER bool cmp_key(const key_type& k1, bool morekey1, const key_type& k2, bool morekey2) const {
+  DEVICE_QUALIFIER static bool cmp_key(const key_type& k1, bool morekey1, const key_type& k2, bool morekey2) {
     return (k1 < k2) || ((k1 == k2) && (static_cast<int>(morekey1) <= static_cast<int>(morekey2)));
   }
   template <bool use_upper_key>

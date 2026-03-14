@@ -121,7 +121,8 @@ struct gpu_masstree {
   }
 
   template <bool use_upper_key = true,
-            bool concurrent = false>
+            bool concurrent = false,
+            bool reuse_root = true>
   void scan(const key_slice_type* lower_keys,
             const size_type* lower_key_lengths,
             const size_type max_key_length,
@@ -134,7 +135,7 @@ struct gpu_masstree {
             key_slice_type* out_keys = nullptr,
             size_type* out_key_lengths = nullptr,
             cudaStream_t stream = 0) {
-    kernels::GpuMasstree::scan_device_func<use_upper_key, concurrent, key_slice_type, size_type, value_type>
+    kernels::GpuMasstree::scan_device_func<use_upper_key, concurrent, reuse_root, key_slice_type, size_type, value_type>
       func{.d_lower_keys = lower_keys, .d_lower_key_lengths = lower_key_lengths,
            .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
            .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
@@ -170,9 +171,9 @@ struct gpu_masstree {
   }
 
   template <bool concurrent, typename tile_type>
-  DEVICE_QUALIFIER value_type cooperative_find_from_root(const key_slice_type* key,
+  DEVICE_QUALIFIER value_type cooperative_find_from_root(elem_type root_lane_elem,
+                                                         const key_slice_type* key,
                                                          size_type key_length,
-                                                         elem_type root_lane_elem,
                                                          const tile_type& tile,
                                                          device_allocator_context_type& allocator) {
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
@@ -216,21 +217,22 @@ struct gpu_masstree {
                                                const tile_type& tile,
                                                device_allocator_context_type& allocator) {
     auto root_lane_elem = cooperative_fetch_root<concurrent>(tile, allocator);
-    return cooperative_find_from_root<concurrent>(key, key_length, root_lane_elem, tile, allocator);
+    return cooperative_find_from_root<concurrent>(root_lane_elem, key, key_length, tile, allocator);
   }
 
   template <bool use_upper_key, bool concurrent, typename tile_type>
-  DEVICE_QUALIFIER size_type cooperative_scan(const key_slice_type* lower_key,
-                                              const size_type lower_key_length,
-                                              const tile_type& tile,
-                                              device_allocator_context_type& allocator,
-                                              const key_slice_type* upper_key = nullptr,
-                                              const size_type upper_key_length = 1,
-                                              size_type out_max_count = 1,
-                                              value_type* out_value = nullptr,
-                                              key_slice_type* out_keys = nullptr,
-                                              size_type* out_key_lengths = nullptr,
-                                              const size_type out_key_max_length = 1) {
+  DEVICE_QUALIFIER size_type cooperative_scan_from_root(elem_type root_lane_elem,
+                                                        const key_slice_type* lower_key,
+                                                        const size_type lower_key_length,
+                                                        const tile_type& tile,
+                                                        device_allocator_context_type& allocator,
+                                                        const key_slice_type* upper_key = nullptr,
+                                                        const size_type upper_key_length = 1,
+                                                        size_type out_max_count = 1,
+                                                        value_type* out_value = nullptr,
+                                                        key_slice_type* out_keys = nullptr,
+                                                        size_type* out_key_lengths = nullptr,
+                                                        const size_type out_key_max_length = 1) {
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
     using dynamic_stack_type_x2 = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
     using dynamic_stack_type_x1 = utils::dynamic_stack_u32<1, tile_type, device_allocator_context_type>;
@@ -240,7 +242,6 @@ struct gpu_masstree {
 
     static constexpr key_slice_type min_key_slice = std::numeric_limits<key_slice_type>::min();
     static constexpr key_slice_type max_key_slice = std::numeric_limits<key_slice_type>::max();
-    size_type current_node_index = root_index_;
     size_type layer = 0, out_count = 0;
     key_slice_type lower_key_slice = lower_key[0];
     bool lower_key_more = (lower_key_length > 1);
@@ -255,11 +256,11 @@ struct gpu_masstree {
     bool passed_lower_key = false;
     dynamic_stack_type_x2 key_slice_and_node_index_stack(allocator, tile);
     [[maybe_unused]] dynamic_stack_type_x1 ignore_upper_key_stack(allocator, tile);
+    auto current_node = node_type(root_index_, root_lane_elem, 0, 0, tile, allocator);
+    current_node.read_metadata_from_registers();
     while (true) {
-      // traverse the btree: current_node_index can be root node or border node
-      auto border_node = node_type(current_node_index, tile, allocator);
-      border_node.template load<concurrent>();
-      coop_traverse_until_border<concurrent>(border_node, lower_key_slice, tile, allocator, false, dummy_early_exit);
+      // traverse the btree: current_node can be root node or border node
+      coop_traverse_until_border<concurrent>(current_node, lower_key_slice, tile, allocator, false, dummy_early_exit);
       // traverse side links, scan the nodes, and decide scan_op:
       //      >=0 (down-link location; go to next layer)
       //      -1 (continue side-link traverse)
@@ -267,10 +268,10 @@ struct gpu_masstree {
       //      -3 (end scanning the range)
       int scan_op = -1;
       while (true) {
-        if (border_node.is_garbage()) { scan_op = -1; }
+        if (current_node.is_garbage()) { scan_op = -1; }
         else {
           // scan a node and store outputs
-          uint32_t count = border_node.template scan<use_upper_key>(
+          uint32_t count = current_node.template scan<use_upper_key>(
               lower_key_slice, lower_key_more, lower_key, lower_key_length, passed_lower_key,
               upper_key_slice, upper_key_more, upper_key, upper_key_length, ignore_upper_key,
               out_max_count, scan_op, out_value, out_keys, out_key_lengths, layer, out_key_max_length);
@@ -288,27 +289,26 @@ struct gpu_masstree {
           if (out_max_count <= 0) { scan_op = -3; }
           else if (scan_op < 0) {
             // if it's end of this layer, go to prev layer
-            if (!border_node.has_sibling()) { scan_op = (layer == 0) ? -3 : -2; }
+            if (!current_node.has_sibling()) { scan_op = (layer == 0) ? -3 : -2; }
             // if reached upper key, end scanning
-            else if (use_upper_key && upper_key_slice <= border_node.get_high_key()) { scan_op = -3; }
+            else if (use_upper_key && upper_key_slice <= current_node.get_high_key()) { scan_op = -3; }
             // else: continue side traversal
             else { assert(scan_op == -1); }
           }
           //  else: found down-link in range, go to next layer
         }
         if (scan_op != -1) { break; }
-        current_node_index = border_node.get_sibling_index();
-        border_node = node_type(current_node_index, tile, allocator);
-        border_node.template load<concurrent>();
+        current_node = node_type(current_node.get_sibling_index(), tile, allocator);
+        current_node.template load<concurrent>();
       }
       // switch layer
       if (scan_op >= 0) { // go to next layer
         layer++;
         // checkpoint key slice and node index to stack
-        const key_slice_type checkpoint_key_slice = border_node.get_key_from_location(scan_op);
-        current_node_index = border_node.get_node_index();
-        key_slice_and_node_index_stack.push(checkpoint_key_slice, current_node_index);
-        current_node_index = border_node.get_value_from_location(scan_op);
+        const key_slice_type checkpoint_key_slice = current_node.get_key_from_location(scan_op);
+        key_slice_and_node_index_stack.push(checkpoint_key_slice, current_node.get_node_index());
+        current_node = node_type(current_node.get_value_from_location(scan_op), tile, allocator);
+        current_node.template load<concurrent>();
         // check if passed the lower key
         passed_lower_key = passed_lower_key ||
             (lower_key_slice < checkpoint_key_slice || layer == lower_key_length);
@@ -328,6 +328,7 @@ struct gpu_masstree {
       }
       else if (scan_op == -2) { // go to prev layer
         // pop stack until checkpoint key is not 0xFFFFFFFF
+        size_type next_node_index;
         while (true) {
           if (layer == 0) {
             key_slice_and_node_index_stack.destroy();
@@ -335,7 +336,7 @@ struct gpu_masstree {
             return out_count;
           }
           layer--;
-          key_slice_and_node_index_stack.pop(lower_key_slice, current_node_index);
+          key_slice_and_node_index_stack.pop(lower_key_slice, next_node_index);
           if constexpr (use_upper_key) {
             ignore_upper_key_stack.pop(ignore_upper_key);
             assert(ignore_upper_key || layer < upper_key_length);
@@ -343,13 +344,15 @@ struct gpu_masstree {
           }
           if (lower_key_slice < max_key_slice) { break; }
         }
+        current_node = node_type(next_node_index, tile, allocator);
+        current_node.template load<concurrent>();
         // scan from checkpoint_key, exclusive
         lower_key_slice++;
         lower_key_more = false;
         if constexpr (use_upper_key) {
           upper_key_slice = ignore_upper_key ? 0 : upper_key[layer];
           upper_key_more = (layer != upper_key_length - 1);
-          assert(ignore_upper_key || border_node.cmp_key(lower_key_slice, lower_key_more, upper_key_slice, upper_key_more));
+          assert(ignore_upper_key || node_type::cmp_key(lower_key_slice, lower_key_more, upper_key_slice, upper_key_more));
         }
       }
       else {
@@ -360,6 +363,25 @@ struct gpu_masstree {
       }
     }
     assert(false);
+  }
+
+  template <bool use_upper_key, bool concurrent, typename tile_type>
+  DEVICE_QUALIFIER size_type cooperative_scan(const key_slice_type* lower_key,
+                                              const size_type lower_key_length,
+                                              const tile_type& tile,
+                                              device_allocator_context_type& allocator,
+                                              const key_slice_type* upper_key = nullptr,
+                                              const size_type upper_key_length = 1,
+                                              size_type out_max_count = 1,
+                                              value_type* out_value = nullptr,
+                                              key_slice_type* out_keys = nullptr,
+                                              size_type* out_key_lengths = nullptr,
+                                              const size_type out_key_max_length = 1) {
+    auto root_lane_elem = cooperative_fetch_root<concurrent>(tile, allocator);
+    return cooperative_scan_from_root<use_upper_key, concurrent>(
+      root_lane_elem,
+      lower_key, lower_key_length, tile, allocator, upper_key, upper_key_length,
+      out_max_count, out_value, out_keys, out_key_lengths, out_key_max_length);
   }
 
   template <bool enable_suffix, typename tile_type>

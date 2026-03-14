@@ -168,7 +168,7 @@ struct find_device_func {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = reuse_root ?
-      tree.template cooperative_find_from_root<concurrent>(cur_key ,cur_key_length, regs.root_lane_elem, tile, allocator) :
+      tree.template cooperative_find_from_root<concurrent>(regs.root_lane_elem, cur_key ,cur_key_length, tile, allocator) :
       tree.template cooperative_find<concurrent>(cur_key, cur_key_length, tile, allocator);
     if (tile.thread_rank() == cur_rank) {
       regs.value = cur_value;
@@ -208,7 +208,7 @@ struct erase_device_func {
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
-template <bool use_upper_key, bool concurrent, typename key_slice_type, typename size_type, typename value_type>
+template <bool use_upper_key, bool concurrent, bool reuse_root, typename key_slice_type, typename size_type, typename value_type>
 struct scan_device_func {
   static constexpr bool reclaim_required = false;
   // kernel args
@@ -232,6 +232,7 @@ struct scan_device_func {
     value_type* value;
     key_slice_type* out_key;
     size_type* out_key_length;
+    key_slice_type root_lane_elem;
   };
   // device-side functions
   template <typename masstree, typename tile_type, typename allocator_type>
@@ -243,7 +244,10 @@ struct scan_device_func {
       .upper_key_length = d_upper_key_lengths ? d_upper_key_lengths[thread_id] : max_key_length,
       .value = d_values ? &d_values[max_count_per_query * thread_id] : nullptr,
       .out_key = d_out_keys ? &d_out_keys[max_count_per_query * max_key_length * thread_id] : nullptr,
-      .out_key_length = d_out_key_lengths ? &d_out_key_lengths[max_count_per_query * thread_id] : nullptr
+      .out_key_length = d_out_key_lengths ? &d_out_key_lengths[max_count_per_query * thread_id] : nullptr,
+      .root_lane_elem = (reuse_root ?
+        tree.template cooperative_fetch_root<concurrent>(tile, allocator) :
+        0)
     };
   }
   template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
@@ -255,9 +259,14 @@ struct scan_device_func {
     auto cur_value = tile.shfl(regs.value, cur_rank);
     auto cur_out_key = tile.shfl(regs.out_key, cur_rank);
     auto cur_out_key_length = tile.shfl(regs.out_key_length, cur_rank);
-    auto cur_count = tree.template cooperative_scan<use_upper_key, concurrent>(
-      cur_lower_key, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
-      max_count_per_query, cur_value, cur_out_key, cur_out_key_length, max_key_length);
+    auto cur_count = reuse_root ?
+      tree.template cooperative_scan_from_root<use_upper_key, concurrent>(
+        regs.root_lane_elem,
+        cur_lower_key, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
+        max_count_per_query, cur_value, cur_out_key, cur_out_key_length, max_key_length) :
+      tree.template cooperative_scan<use_upper_key, concurrent>(
+        cur_lower_key, cur_lower_key_length, tile, allocator, cur_upper_key, cur_upper_key_length,
+        max_count_per_query, cur_value, cur_out_key, cur_out_key_length, max_key_length);
     if (tile.thread_rank() == cur_rank) {
       regs.count = cur_count;
     }
