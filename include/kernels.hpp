@@ -103,7 +103,7 @@ __global__ void initialize_kernel(masstree tree, size_type* d_root_index) {
   tree.allocate_root_node(d_root_index, tile, allocator);
 }
 
-template <bool enable_suffix, typename key_slice_type, typename size_type, typename value_type>
+template <bool enable_suffix, bool reuse_root, typename key_slice_type, typename size_type, typename value_type>
 struct insert_device_func {
   static constexpr bool reclaim_required = true;
   // kernel args
@@ -117,6 +117,7 @@ struct insert_device_func {
     const key_slice_type* key;
     size_type key_length;
     value_type value;
+    key_slice_type root_lane_elem;
   };
   // device-side functions
   template <typename masstree, typename tile_type, typename allocator_type>
@@ -124,7 +125,10 @@ struct insert_device_func {
     return dev_regs{
       .key = &d_keys[max_key_length * thread_id],
       .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
-      .value = d_values[thread_id]
+      .value = d_values[thread_id],
+      .root_lane_elem = (reuse_root ? 
+        tree.template cooperative_fetch_root<true>(tile, allocator) :
+        0)
     };
   }
   template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
@@ -132,7 +136,12 @@ struct insert_device_func {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
-    tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+    if constexpr (reuse_root) {
+      tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+    }
+    else {
+      tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+    }
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
@@ -179,7 +188,7 @@ struct find_device_func {
   }
 };
 
-template <bool concurrent, bool do_merge, bool do_remove_empty_root, typename key_slice_type, typename size_type, typename value_type>
+template <bool concurrent, bool do_merge, bool do_remove_empty_root, bool reuse_root, typename key_slice_type, typename size_type, typename value_type>
 struct erase_device_func {
   static constexpr bool reclaim_required = true;
   // kernel args
@@ -190,6 +199,7 @@ struct erase_device_func {
   struct dev_regs {
     const key_slice_type* key;
     size_type key_length;
+    key_slice_type root_lane_elem;
   };
   // device-side functions
   template <typename masstree, typename tile_type, typename allocator_type>
@@ -197,13 +207,21 @@ struct erase_device_func {
     return dev_regs{
       .key = &d_keys[max_key_length * thread_id],
       .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
+      .root_lane_elem = (reuse_root ? 
+        tree.template cooperative_fetch_root<concurrent>(tile, allocator) :
+        0)
     };
   }
   template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    tree.template cooperative_erase<concurrent, do_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
+    if constexpr (reuse_root) {
+      tree.template cooperative_erase_from_root<concurrent, do_merge, do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer);
+    }
+    else {
+      tree.template cooperative_erase<concurrent, do_merge, do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
+    }
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };

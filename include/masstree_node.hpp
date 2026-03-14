@@ -41,6 +41,14 @@ struct masstree_node {
   }
   DEVICE_QUALIFIER masstree_node(size_type index,
                                  const elem_type elem,
+                                 const tile_type& tile,
+                                 allocator_type& allocator)
+      : node_index_(index)
+      , lane_elem_(elem)
+      , tile_(tile)
+      , allocator_(allocator) {}
+  DEVICE_QUALIFIER masstree_node(size_type index,
+                                 const elem_type elem,
                                  uint32_t metadata,
                                  uint32_t keystate,
                                  const tile_type& tile,

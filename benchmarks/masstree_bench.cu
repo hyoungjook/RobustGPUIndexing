@@ -38,10 +38,9 @@ using size_type = uint32_t;
 
 template <typename masstree_type,
           bool enable_suffix = true,
+          bool reuse_root = true,
           bool find_concurrent = false,
-          bool find_reuse_root = true,
           bool successor_concurrent = false,
-          bool successor_reuse_root = true,
           bool erase_remove_empty_root = true,
           bool erase_merge = true,
           bool erase_concurrent = true>
@@ -76,7 +75,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
     }
     gpu_timer insert_timer;
     insert_timer.start_timer();
-    tree.template insert<enable_suffix>(
+    tree.template insert<enable_suffix, reuse_root>(
       d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys);
     insert_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
@@ -85,7 +84,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
 
     gpu_timer find_timer;
     find_timer.start_timer();
-    tree.template find<find_concurrent, find_reuse_root>(
+    tree.template find<find_concurrent, reuse_root>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys);
     find_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
@@ -94,7 +93,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
 
     gpu_timer successor_timer;
     successor_timer.start_timer();
-    tree.template scan<false, successor_concurrent, successor_reuse_root>(
+    tree.template scan<false, successor_concurrent, reuse_root>(
       d_query_keys.data().get(), d_query_lengths.data().get(),
       max_key_length, max_counts_per_query, num_keys,
       nullptr, nullptr, nullptr, d_query_results.data().get(), nullptr, nullptr);
@@ -108,7 +107,8 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
     erase_timer.start_timer();
     tree.template erase<erase_remove_empty_root,
                         erase_merge || erase_remove_empty_root,
-                        erase_concurrent || erase_merge || erase_remove_empty_root>(
+                        erase_concurrent || erase_merge || erase_remove_empty_root,
+                        reuse_root>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase);
     erase_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
