@@ -297,6 +297,7 @@ struct scan_device_func {
 template <bool enable_suffix,
           bool erase_do_merge,
           bool erase_do_remove_empty_root,
+          bool reuse_root,
           typename key_slice_type,
           typename size_type,
           typename value_type>
@@ -317,6 +318,7 @@ struct mixed_device_func {
     size_type key_length;
     value_type value;
     bool result;
+    key_slice_type root_lane_elem;
   };
   // device-side functions
   template <typename masstree, typename tile_type, typename allocator_type>
@@ -325,7 +327,10 @@ struct mixed_device_func {
       .type = d_types[thread_id],
       .key = &d_keys[max_key_length * thread_id],
       .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
-      .value = d_values[thread_id]
+      .value = d_values[thread_id],
+      .root_lane_elem = (reuse_root ? 
+        tree.template cooperative_fetch_root<true>(tile, allocator) :
+        0)
     };
   }
   template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
@@ -335,15 +340,21 @@ struct mixed_device_func {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     if (cur_type == request_type_insert) {
       auto cur_value = tile.shfl(regs.value, cur_rank);
-      auto cur_result = tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists);
+      auto cur_result = reuse_root ?
+        tree.template cooperative_insert_from_root<enable_suffix>(regs.root_lane_elem, cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists) :  
+        tree.template cooperative_insert<enable_suffix>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
-      auto cur_value = tree.template cooperative_find<true>(cur_key, cur_key_length, tile, allocator);
+      auto cur_value = reuse_root ?
+        tree.template cooperative_find_from_root<true>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator) :
+        tree.template cooperative_find<true>(cur_key, cur_key_length, tile, allocator);
       if (tile.thread_rank() == cur_rank) { regs.value = cur_value; }
     }
     else if (cur_type == request_type_erase) {
-      auto cur_result = tree.template cooperative_erase<true, erase_do_merge, erase_do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
+      auto cur_result = reuse_root ?
+        tree.template cooperative_erase_from_root<true, erase_do_merge, erase_do_remove_empty_root>(regs.root_lane_elem, cur_key, cur_key_length, tile, allocator, reclaimer) :
+        tree.template cooperative_erase<true, erase_do_merge, erase_do_remove_empty_root>(cur_key, cur_key_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else {  // request_type_successor
