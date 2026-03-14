@@ -73,71 +73,6 @@ __global__ void batch_kernel(index_type index,
   if constexpr (do_reclaim) { reclaimer.drain_all(block_wide_tile, tile, allocator); }
 }
 
-template <bool do_reclaim, typename device_func0, typename device_func1, typename index_type>
-__launch_bounds__(index_type::host_reclaimer_type::block_size_, target_blocks_per_sm)
-__global__ void batch_concurrent_two_funcs_kernel(index_type index,
-                                                  const device_func0 func0,
-                                                  uint32_t num_requests0,
-                                                  const device_func1 func1,
-                                                  uint32_t num_requests1) {
-  using allocator_type = typename index_type::device_allocator_context_type;
-  using reclaimer_type = typename index_type::device_reclaimer_context_type;
-  __shared__ cg::block_tile_memory<reclaimer_type::block_size_> block_tile_shmem;
-  auto block = cg::this_thread_block(block_tile_shmem);
-  auto tile = cg::tiled_partition<index_type::cg_tile_size>(block);
-  allocator_type allocator{index.allocator_, tile};
-  auto block_wide_tile = cg::tiled_partition<reclaimer_type::block_size_>(block);
-  extern __shared__ uint32_t reclaimer_shmem_buffer[];
-  reclaimer_type reclaimer{index.reclaimer_,
-                           (do_reclaim && reclaimer_type::required_shmem_size() > 0) ? &reclaimer_shmem_buffer[0] : nullptr,
-                           gridDim.x,
-                           block_wide_tile};
-  // even'th tile -> do func0, odd'th tile -> do func1
-  // assume num_requests0 ~= num_requests1
-  uint32_t block_size = blockDim.x;
-  uint32_t num_request_tiles = (max(num_requests0, num_requests1) + index_type::cg_tile_size - 1) / index_type::cg_tile_size * 2;
-  uint32_t num_request_blocks = (num_request_tiles * index_type::cg_tile_size + block_size - 1) / block_size;
-  uint32_t num_worker_blocks = gridDim.x;
-  for (uint32_t thread_id = threadIdx.x + blockIdx.x * blockDim.x;
-       thread_id < (num_request_blocks * block_size);
-       thread_id += (num_worker_blocks * block_size)) {
-    uint32_t tile_id = thread_id / index_type::cg_tile_size;
-    uint32_t request_id = (tile_id % 2);
-    uint32_t thread_id_within_request = (tile_id / 2) * index_type::cg_tile_size + tile.thread_rank();
-    if (request_id == 0) {
-      bool task_exists = (thread_id_within_request < num_requests0);
-      typename device_func0::dev_regs regs;
-      if (task_exists) { regs = func0.load(thread_id_within_request, tile); }
-      if constexpr (do_reclaim) { reclaimer.begin_critical_section(block_wide_tile, allocator); }
-      auto work_queue = tile.ballot(task_exists);
-      while (work_queue) {
-        int cur_rank = __ffs(work_queue) - 1;
-        func0.exec(index, regs, tile, allocator, reclaimer, cur_rank);
-        if (tile.thread_rank() == cur_rank) { task_exists = false; }
-        work_queue = tile.ballot(task_exists);
-      }
-      if constexpr (do_reclaim) { reclaimer.end_critical_section(block_wide_tile); }
-      if (thread_id_within_request < num_requests0) { func0.store(regs, thread_id_within_request); }
-    }
-    else { // request_id == 1
-      bool task_exists = (thread_id_within_request < num_requests1);
-      typename device_func1::dev_regs regs;
-      if (task_exists) { regs = func1.load(thread_id_within_request, tile); }
-      if constexpr (do_reclaim) { reclaimer.begin_critical_section(block_wide_tile, allocator); }
-      auto work_queue = tile.ballot(task_exists);
-      while (work_queue) {
-        int cur_rank = __ffs(work_queue) - 1;
-        func1.exec(index, regs, tile, allocator, reclaimer, cur_rank);
-        if (tile.thread_rank() == cur_rank) { task_exists = false; }
-        work_queue = tile.ballot(task_exists);
-      }
-      if constexpr (do_reclaim) { reclaimer.end_critical_section(block_wide_tile); }
-      if (thread_id_within_request < num_requests1) { func1.store(regs, thread_id_within_request); }
-    }
-  }
-  if constexpr (do_reclaim) { reclaimer.drain_all(block_wide_tile, tile, allocator); }
-}
-
 template <typename index_type, typename device_func>
 void launch_batch_kernel(index_type& index, const device_func& func, uint32_t num_requests, cudaStream_t stream) {
   static constexpr bool do_reclaim = device_func::reclaim_required;
@@ -155,25 +90,6 @@ void launch_batch_kernel(index_type& index, const device_func& func, uint32_t nu
 
   kernels::batch_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
       index, func, num_requests);
-}
-
-template <typename index_type, typename device_func0, typename device_func1>
-void launch_batch_concurrent_two_funcs_kernel(index_type& index,const device_func0& func0, uint32_t num_requests0, const device_func1& func1, uint32_t num_requests1, cudaStream_t stream) {
-  static constexpr bool do_reclaim = device_func0::reclaim_required || device_func1::reclaim_required;
-  int block_size = index_type::host_reclaimer_type::block_size_;
-  std::size_t shmem_size = do_reclaim ? sizeof(uint32_t) * index_type::device_reclaimer_context_type::required_shmem_size() : 0;
-  int num_blocks_per_sm;
-  cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-    &num_blocks_per_sm,
-    kernels::batch_concurrent_two_funcs_kernel<do_reclaim, device_func0, device_func1, index_type>,
-    block_size,
-    shmem_size);
-  cudaDeviceProp device_prop;
-  cudaGetDeviceProperties(&device_prop, 0);
-  uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
-    
-  kernels::batch_concurrent_two_funcs_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
-      index, func0, num_requests0, func1, num_requests1);
 }
 
 namespace GpuMasstree {
