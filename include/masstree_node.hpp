@@ -92,6 +92,13 @@ struct masstree_node {
     utils::memory::store<elem_type, true, true>(node_ptr + tile_.thread_rank(), lane_elem_);
     tile_.sync();
   }
+  template <bool atomic, bool acquire = true>
+  DEVICE_QUALIFIER void load_fetchonly() {
+    auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+    if constexpr (atomic) { tile_.sync(); }
+    lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr + tile_.thread_rank());
+    if constexpr (atomic) { tile_.sync(); }
+  }
 
   DEVICE_QUALIFIER void read_metadata_from_registers() {
     metadata_ = tile_.shfl(lane_elem_, metadata_lane_);

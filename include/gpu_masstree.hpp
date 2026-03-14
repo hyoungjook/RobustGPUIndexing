@@ -71,8 +71,7 @@ struct gpu_masstree {
 
   gpu_masstree& operator=(const gpu_masstree& other) = delete;
   gpu_masstree(const gpu_masstree& other)
-      : d_root_index_(other.d_root_index_)
-      , is_owner_(false)
+      : root_index_(other.root_index_)
       , allocator_(other.allocator_)
       , reclaimer_(other.reclaimer_) {}
 
@@ -82,17 +81,24 @@ struct gpu_masstree {
 
   // host-side APIs
   // if key_lengths == NULL, we use max_key_length as a fixed length
-  template <bool concurrent = false>
+  template <bool concurrent = false,
+            bool interleave = false>
   void find(const key_slice_type* keys,
             const size_type max_key_length,
             const size_type* key_lengths,
             value_type* values,
             const size_type num_keys,
             cudaStream_t stream = 0) {
-    kernels::GpuMasstree::find_device_func<concurrent, key_slice_type, size_type, value_type>
-      func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
-    kernels::launch_batch_kernel(*this, func, num_keys, stream);
-    #undef find_args
+    if constexpr (interleave) {
+      find_interleave_device_func<concurrent>
+        func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
+      kernels::launch_batch_interleave_kernel(*this, func, num_keys, stream);
+    }
+    else {
+      kernels::GpuMasstree::find_device_func<concurrent, key_slice_type, size_type, value_type>
+        func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
+      kernels::launch_batch_kernel(*this, func, num_keys, stream);
+    }
   }
 
   template <bool enable_suffix = true>
@@ -220,7 +226,7 @@ struct gpu_masstree {
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
     dummy_early_exit_check<node_type> dummy_early_exit;
-    size_type current_node_index = *d_root_index_;
+    size_type current_node_index = root_index_;
     size_type slice = 0;
     while (slice < key_length) {
       const key_slice_type key_slice = key[slice];
@@ -266,7 +272,7 @@ struct gpu_masstree {
 
     static constexpr key_slice_type min_key_slice = std::numeric_limits<key_slice_type>::min();
     static constexpr key_slice_type max_key_slice = std::numeric_limits<key_slice_type>::max();
-    size_type current_node_index = *d_root_index_;
+    size_type current_node_index = root_index_;
     size_type layer = 0, out_count = 0;
     key_slice_type lower_key_slice = lower_key[0];
     bool lower_key_more = (lower_key_length > 1);
@@ -408,7 +414,7 @@ struct gpu_masstree {
       const bool& more_key_;
       bool exited_ = false;
     };
-    size_type current_node_index = *d_root_index_;
+    size_type current_node_index = root_index_;
     size_type prev_root_index = invalid_value;
     size_type slice = 0;
     while (slice < key_length) {
@@ -431,7 +437,7 @@ struct gpu_masstree {
         border_node.unlock();
         if (prev_root_index == invalid_value) {
           // if it's cascading, restart from the global root
-          current_node_index = *d_root_index_;
+          current_node_index = root_index_;
           slice = 0;
           continue;
         }
@@ -586,7 +592,7 @@ struct gpu_masstree {
       bool exited_ = false;
     };
     [[maybe_unused]] dynamic_stack_type per_layer_indexes(allocator, tile); // (root_index, border_index)
-    size_type current_node_index = *d_root_index_;
+    size_type current_node_index = root_index_;
     uint32_t slice = 0;
     bool retry_with_merge = false;
     while (slice < key_length) {
@@ -1141,6 +1147,121 @@ struct gpu_masstree {
   }
 
  public:
+  // device-side interleave functions
+  template <bool concurrent>
+  struct find_interleave_device_func {
+    static constexpr bool reclaim_required = false;
+    // kernel args
+    const key_slice_type* d_keys;
+    size_type max_key_length;
+    const size_type* d_key_lengths;
+    value_type* d_values;
+    // device-side registers
+    struct dev_regs {
+      const key_slice_type* key;
+      size_type key_length;
+      value_type value;
+    };
+    // device-side states
+    template <typename tile_type, typename allocator_type>
+    struct dev_states {
+      masstree_node<tile_type, allocator_type> node;
+    };
+    struct dev_perlane_states {
+      size_type slice;
+      key_slice_type key_slice;
+    };
+    // device-side functions
+    template <typename tile_type>
+    DEVICE_QUALIFIER dev_regs load(uint32_t thread_id, tile_type& tile) const {
+      return dev_regs{
+        .key = &d_keys[max_key_length * thread_id],
+        .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length
+      };
+    }
+    template <int interleave_size, typename masstree, typename tile_type, typename allocator_type>
+    DEVICE_QUALIFIER dev_perlane_states exec_init_perlane(masstree& tree, dev_regs& regs, const tile_type& tile, allocator_type& allocator, int cur_rank, bool task_exists) const {
+      dev_perlane_states perlane_states;
+      if (task_exists && cur_rank <= tile.thread_rank() && tile.thread_rank() < cur_rank + interleave_size) {
+        perlane_states.slice = 0;
+        perlane_states.key_slice = regs.key[0];
+      }
+      return perlane_states;
+    }
+    template <typename masstree, typename tile_type, typename allocator_type>
+    DEVICE_QUALIFIER dev_states<tile_type, allocator_type> exec_init(masstree& tree, dev_regs& regs, const tile_type& tile, allocator_type& allocator, int cur_rank) const {
+      using states_type = dev_states<tile_type, allocator_type>;
+      using node_type = masstree_node<tile_type, allocator_type>;
+      states_type states{
+        .node = node_type(tree.root_index_, tile, allocator)
+      };
+      states.node.template load_fetchonly<concurrent>();
+      return states;
+    }
+    template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
+    DEVICE_QUALIFIER bool exec_step(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank, dev_perlane_states& perlane_states, dev_states<tile_type, allocator_type>& states) const {
+      using node_type = masstree_node<tile_type, device_allocator_context_type>;
+      using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
+      // states.node is already loaded with load_fetchonly()
+      states.node.read_metadata_from_registers();
+      auto key_slice = tile.shfl(perlane_states.key_slice, cur_rank);
+      if constexpr (concurrent) {
+        // traverse_side_links
+        if (states.node.traverse_required(key_slice)) {
+          auto node_index = states.node.get_sibling_index();
+          states.node = node_type(node_index, tile, allocator);
+          states.node.template load_fetchonly<concurrent>();
+          return false; // continue
+        }
+      }
+      if (states.node.is_border()) {
+        auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
+        auto slice = tile.shfl(perlane_states.slice, cur_rank);
+        const bool more_key = (slice < cur_key_length - 1);
+        size_type found_value;
+        const int found_keystate = states.node.get_key_value_from_node(key_slice, found_value, more_key);
+        if (found_keystate < 0) {
+          // key not exists, exit now
+          if (tile.thread_rank() == cur_rank) {
+            regs.value = invalid_value;
+          }
+          return true;  // done
+        }
+        if (found_keystate == node_type::KEYSTATE_LINK) {
+          if (tile.thread_rank() == cur_rank) {
+            perlane_states.slice++;
+            perlane_states.key_slice = regs.key[perlane_states.slice];
+          }
+          states.node = node_type(found_value, tile, allocator);
+        }
+        else {
+          if (found_keystate == node_type::KEYSTATE_SUFFIX) {
+            auto suffix = suffix_type(found_value, tile, allocator);
+            suffix.load_head();
+            auto cur_key = tile.shfl(regs.key, cur_rank);
+            const bool suffix_eq = suffix.streq(cur_key + slice + 1, cur_key_length - slice - 1);
+            found_value = (suffix_eq ? suffix.get_value() : invalid_value);
+          }
+          // return found_value
+          if (tile.thread_rank() == cur_rank) {
+            regs.value = found_value;
+          }
+          return true;  // done
+        }
+      }
+      else {
+        auto next_index = states.node.find_next(key_slice);
+        states.node = node_type(next_index, tile, allocator);
+      }
+      states.node.template load_fetchonly<concurrent>();
+      return false; // continue
+    }
+    DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const {
+      d_values[thread_id] = regs.value;
+    }
+  };
+
+ public:
   // device-side debug functions
   template <typename tile_type, typename Func>
   DEVICE_QUALIFIER void cooperative_traverse_tree_nodes(Func& task, const tile_type& tile) {
@@ -1151,7 +1272,7 @@ struct gpu_masstree {
     device_allocator_context_type allocator{allocator_, tile};
     // stack: stores node indexes. metadata: # of traversed children
     dynamic_stack_type stack(allocator, tile);
-    uint32_t current_node_index = *d_root_index_;
+    uint32_t current_node_index = root_index_;
     uint32_t num_traversed_children = 0;
     stack.push(current_node_index, num_traversed_children);
     uint32_t stack_size = 1;
@@ -1295,9 +1416,9 @@ struct gpu_masstree {
   }
 
   template <typename tile_type>
-  DEVICE_QUALIFIER void allocate_root_node(const tile_type& tile, device_allocator_context_type& allocator) {
+  DEVICE_QUALIFIER void allocate_root_node(size_type* d_root_index, const tile_type& tile, device_allocator_context_type& allocator) {
     auto root_index = allocator.allocate(tile);
-    *d_root_index_ = root_index;
+    *d_root_index = root_index;
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
     auto root_node = node_type(root_index, tile, allocator);
     root_node.initialize_root();
@@ -1305,32 +1426,28 @@ struct gpu_masstree {
   }
 
   void allocate() {
-    is_owner_ = true;
-    cuda_try(cudaMalloc(&d_root_index_, sizeof(size_type)));
-    cuda_try(cudaMemset(d_root_index_, 0x00, sizeof(size_type)));
     initialize();
   }
 
-  void deallocate() {
-    if (is_owner_) {
-      cuda_try(cudaFree(d_root_index_));
-    }
-  }
+  void deallocate() {}
 
   void initialize() {
     const uint32_t num_blocks = 1;
     const uint32_t block_size = cg_tile_size;
-    kernels::GpuMasstree::initialize_kernel<<<num_blocks, block_size>>>(*this);
+    size_type* d_root_index;
+    cuda_try(cudaMalloc(&d_root_index, sizeof(size_type)));
+    kernels::GpuMasstree::initialize_kernel<<<num_blocks, block_size>>>(*this, d_root_index);
     cuda_try(cudaDeviceSynchronize());
+    cuda_try(cudaMemcpy(&root_index_, d_root_index, sizeof(size_type), cudaMemcpyDeviceToHost));
+    cuda_try(cudaFree(d_root_index));
   }
 
-  size_type* d_root_index_;
-  bool is_owner_;
+  size_type root_index_;
   device_allocator_instance_type allocator_;
   device_reclaimer_instance_type reclaimer_;
 
-  template <typename masstree>
-  friend __global__ void kernels::GpuMasstree::initialize_kernel(masstree);
+  template <typename masstree, typename size_type>
+  friend __global__ void kernels::GpuMasstree::initialize_kernel(masstree, size_type*);
 
   template <bool do_reclaim, typename device_func, typename index_type>
   friend __global__ void kernels::batch_kernel(index_type index,
@@ -1343,6 +1460,11 @@ struct gpu_masstree {
                                                                    uint32_t num_requests0,
                                                                    const device_func1 func1,
                                                                    uint32_t num_requests1);
+
+  template <bool do_reclaim, typename device_func, typename index_type>
+  friend __global__ void kernels::batch_interleave_kernel(index_type index,
+                                                          const device_func func,
+                                                          uint32_t num_requests);
 
 }; // struct gpu_masstree
 

@@ -39,6 +39,7 @@ using size_type = uint32_t;
 template <typename masstree_type,
           bool enable_suffix = true,
           bool find_concurrent = false,
+          bool find_interleave = false,
           bool successor_concurrent = false,
           bool erase_remove_empty_root = true,
           bool erase_merge = true,
@@ -83,7 +84,7 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
 
     gpu_timer find_timer;
     find_timer.start_timer();
-    tree.template find<find_concurrent>(
+    tree.template find<find_concurrent, find_interleave>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys);
     find_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
