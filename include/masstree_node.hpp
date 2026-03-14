@@ -735,7 +735,6 @@ struct masstree_node {
   DEVICE_QUALIFIER void borrow_right(masstree_node& sibling_node,
                                      masstree_node& parent_node,
                                      int left_location,
-                                     const value_type& current_node_index,
                                      const value_type& new_sibling_index,
                                      masstree_node& new_sibling_node) {
     // compute num shift; adjust similar to get_split_left_width()
@@ -781,7 +780,7 @@ struct masstree_node {
     }
     new_sibling_node.write_metadata_to_registers();
     // make old sibling empty
-    sibling_node.make_garbage_node(true, current_node_index);
+    sibling_node.make_garbage_node(true, node_index_);
     // update parent
     if (tile_.thread_rank() == get_key_lane_from_location(left_location)) {
       parent_node.lane_elem_ = pivot_key;

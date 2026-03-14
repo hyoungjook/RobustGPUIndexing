@@ -649,8 +649,7 @@ struct gpu_masstree {
               border_node.lock();
               border_node.template load<true>();
               if constexpr (concurrent) {
-                size_type node_index;
-                traverse_side_links_with_locks(border_node, node_index, key_slice, tile, allocator);
+                traverse_side_links_with_locks(border_node, key_slice, tile, allocator);
               }
               if (do_merge && border_node.is_underflow()) {
                 border_node.unlock();
@@ -785,12 +784,11 @@ struct gpu_masstree {
                                    early_exit_check& early_exit) {
     // starting from a local root node in a layer, return the border node and its index
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
-    size_type current_node_index = current_root_index;
+    node_type current_node = node_type(current_root_index, tile, allocator);
     while (true) {
-      node_type current_node = node_type(current_node_index, tile, allocator);
       current_node.template load<concurrent>();
       if constexpr (concurrent) {
-        traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
+        traverse_side_links(current_node, key_slice, tile, allocator);
       }
       if (current_node.is_border()) {
         if (lock_border_node) {
@@ -800,7 +798,7 @@ struct gpu_masstree {
           current_node.lock();
           current_node.template load<true>();
           if constexpr (concurrent) {
-            traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
+            traverse_side_links_with_locks(current_node, key_slice, tile, allocator);
           }
           if (!current_node.is_border()) {
             current_node.unlock();
@@ -810,7 +808,8 @@ struct gpu_masstree {
         return current_node;
       }
       else {
-        current_node_index = current_node.find_next(key_slice);
+        auto next_index = current_node.find_next(key_slice);
+        current_node = node_type(next_index, tile, allocator);
       }
     }
     assert(false);
@@ -827,12 +826,11 @@ struct gpu_masstree {
     // proactively split full nodes while traversal. also the returned border node is not full.
     // if early exit condition is met, returned node is not locked by this warp (might locked by another)
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
-    size_type current_node_index = current_root_index;
+    node_type current_node = node_type(current_root_index, tile, allocator);
     size_type parent_index = current_root_index;
     while (true) {
-      auto current_node = node_type(current_node_index, tile, allocator);
       current_node.template load<true>();
-      bool link_traversed = traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
+      bool link_traversed = traverse_side_links(current_node, key_slice, tile, allocator);
 
       // early exit condition
       if (current_node.is_border() && early_exit.check(current_node)) {
@@ -845,14 +843,14 @@ struct gpu_masstree {
         if (current_node.try_lock()) {
           current_node.template load<true>();
           if (!current_node.is_full()) {
-            link_traversed |= traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
+            link_traversed |= traverse_side_links_with_locks(current_node, key_slice, tile, allocator);
           }
           if (current_node.is_full()) {
             // if parent is unknown, restart from root
-            if (current_node_index != current_root_index &&
-                (current_node_index == parent_index || link_traversed || current_node.traverse_required(key_slice))) {
+            if (current_node.get_node_index() != current_root_index &&
+                (current_node.get_node_index() == parent_index || link_traversed || current_node.traverse_required(key_slice))) {
               current_node.unlock();
-              current_node_index = current_root_index;
+              current_node = node_type(current_root_index, tile, allocator);
               parent_index = current_root_index;
               continue;
             }
@@ -865,18 +863,18 @@ struct gpu_masstree {
         }
         else {
           // try_lock failed, retry from parent
-          current_node_index = parent_index;
+          current_node = node_type(parent_index, tile, allocator);
           continue;
         }
       }
       assert((current_node.is_full() || current_node.is_border()) ? 
              (current_node.is_locked() && !current_node.traverse_required(key_slice)) : true);
       assert(current_node.is_full() ?
-             (current_node_index == current_root_index || (current_node_index != parent_index && !link_traversed)) : true);
+             (current_node.get_node_index() == current_root_index || (current_node.get_node_index() != parent_index && !link_traversed)) : true);
 
       // if the node is full, split. it's already locked if it's full.
       if (current_node.is_full()) {
-        if (current_node_index != current_root_index) {
+        if (current_node.get_node_index() != current_root_index) {
           assert(!current_node.is_root());
           auto parent_node = node_type(parent_index, tile, allocator);
           parent_node.lock();
@@ -884,10 +882,10 @@ struct gpu_masstree {
           // parent should be not full, not garbage, and correct parent
           if (parent_node.is_full() ||
               parent_node.is_garbage() ||
-              !parent_node.ptr_is_in_node(current_node_index)) {
+              !parent_node.ptr_is_in_node(current_node.get_node_index())) {
             current_node.unlock();
             parent_node.unlock();
-            current_node_index = current_root_index;
+            current_node = node_type(current_root_index, tile, allocator);
             parent_index = current_root_index;
             continue;
           }
@@ -901,14 +899,14 @@ struct gpu_masstree {
           // update current node if necessary
           if (current_node.key_is_in_upperhalf(split_result.pivot_key, key_slice)) {
             current_node.unlock();
-            current_node_index = sibling_index;
+            current_node = node_type(sibling_index, tile, allocator);
             current_node = split_result.sibling;
           }
           else {
             split_result.sibling.unlock();
           }
         }
-        else { // (current_node_index == root_node_index)
+        else { // (current_node.get_node_index() == root_node_index)
           assert(current_node.is_root());
           auto left_sibling_index = allocator.allocate(tile);
           auto right_sibling_index = allocator.allocate(tile);
@@ -918,8 +916,7 @@ struct gpu_masstree {
           two_siblings.left.template store<true>();
           current_node.store_unlock();
           // update current node to left or right
-          current_node_index = current_node.find_next(key_slice);
-          if (current_node_index == left_sibling_index) {
+          if (current_node.find_next(key_slice) == left_sibling_index) {
             two_siblings.right.unlock();
             current_node = two_siblings.left;
           }
@@ -939,8 +936,9 @@ struct gpu_masstree {
       if (current_node.is_border()) {
         return current_node;
       } else {  // traverse
-        parent_index = current_node_index;
-        current_node_index = current_node.find_next(key_slice);
+        parent_index = current_node.get_node_index();
+        auto next_index = current_node.find_next(key_slice);
+        current_node = node_type(next_index, tile, allocator);
       }
     }
     assert(false);
@@ -958,14 +956,13 @@ struct gpu_masstree {
     // proactively merge/borrow underflow nodes while traversal. also the returned border node is not underflow.
     // if early exit condition is met, returned node is not locked by this warp (might locked by another)
     using node_type = masstree_node<tile_type, device_allocator_context_type>;
-    size_type current_node_index = current_root_index;
+    node_type current_node(current_root_index, tile, allocator);
     size_type parent_index = current_root_index;
     size_type sibling_index = current_root_index;
     bool sibling_at_left = false;
     while (true) {
-      node_type current_node = node_type(current_node_index, tile, allocator);
       current_node.template load<true>();
-      bool link_traversed = traverse_side_links(current_node, current_node_index, key_slice, tile, allocator);
+      bool link_traversed = traverse_side_links(current_node, key_slice, tile, allocator);
 
       // early exit condition
       if (current_node.is_border() && early_exit.check(current_node)) {
@@ -978,15 +975,15 @@ struct gpu_masstree {
         if (current_node.try_lock()) {
           current_node.template load<true>();
           if (!current_node.is_underflow()) {
-            link_traversed |= traverse_side_links_with_locks(current_node, current_node_index, key_slice, tile, allocator);
+            link_traversed |= traverse_side_links_with_locks(current_node, key_slice, tile, allocator);
           }
           if (current_node.is_underflow()) {
             // if parent is unknown, restart from root
-            if (current_node_index != current_root_index &&
-                (current_node_index == parent_index || sibling_index == current_root_index ||
+            if (current_node.get_node_index() != current_root_index &&
+                (current_node.get_node_index() == parent_index || sibling_index == current_root_index ||
                  link_traversed || current_node.traverse_required(key_slice))) {
               current_node.unlock();
-              current_node_index = current_root_index;
+              current_node = node_type(current_root_index, tile, allocator);
               parent_index = current_root_index;
               sibling_index = current_root_index;
               continue;
@@ -1000,7 +997,7 @@ struct gpu_masstree {
         }
         else {
           // try_lock failed, retry from parent
-          current_node_index = parent_index;
+          current_node = node_type(parent_index, tile, allocator);
           sibling_index = current_root_index;
           continue;
         }
@@ -1008,7 +1005,7 @@ struct gpu_masstree {
       assert((current_node.is_underflow() || current_node.is_border()) ? 
              (current_node.is_locked() && !current_node.traverse_required(key_slice)) : true);
       assert(current_node.is_underflow() ?
-             (current_node_index == current_root_index || (current_node_index != parent_index && sibling_index != current_root_index && !link_traversed)) : true);
+             (current_node.get_node_index() == current_root_index || (current_node.get_node_index() != parent_index && sibling_index != current_root_index && !link_traversed)) : true);
 
 
       // proactively merge/borrow underflow nodes
@@ -1022,7 +1019,7 @@ struct gpu_masstree {
           // global lock order: right -> left; use try_lock to avoid deadlock
           if (!sibling_node.try_lock()) {
             current_node.unlock();
-            current_node_index = parent_index;
+            current_node = node_type(parent_index, tile, allocator);
             sibling_index = current_root_index;
             continue;
           }
@@ -1031,11 +1028,11 @@ struct gpu_masstree {
         // check sibling validity
         if (sibling_node.is_garbage() ||
             (sibling_at_left ?
-             (sibling_node.get_sibling_index() != current_node_index) :
+             (sibling_node.get_sibling_index() != current_node.get_node_index()) :
              (current_node.get_sibling_index() != sibling_index))) {
           current_node.unlock();
           sibling_node.unlock();
-          current_node_index = current_root_index;
+          current_node = node_type(current_root_index, tile, allocator);
           parent_index = current_root_index;
           sibling_index = current_root_index;
           continue;
@@ -1049,19 +1046,19 @@ struct gpu_masstree {
           current_node.unlock();
           sibling_node.unlock();
           parent_node.unlock();
-          current_node_index = current_root_index;
+          current_node = node_type(current_root_index, tile, allocator);
           parent_index = current_root_index;
           sibling_index = current_root_index;
           continue;
         }
         // make sure parent is correct parent for both children
-        auto plan = parent_node.get_merge_plan(current_node_index);
+        auto plan = parent_node.get_merge_plan(current_node.get_node_index());
         if ((plan.left_location < 0) ||
             (plan.sibling_index != sibling_index)) {
           current_node.unlock();
           sibling_node.unlock();
           parent_node.unlock();
-          current_node_index = current_root_index;
+          current_node = node_type(current_root_index, tile, allocator);
           parent_index = current_root_index;
           sibling_index = current_root_index;
           continue;
@@ -1078,10 +1075,9 @@ struct gpu_masstree {
             right_sibling_node.template store<true>();
             parent_node.store_unlock();
             right_sibling_node.unlock();
-            auto right_sibling_index = plan.sibling_at_left ? current_node_index : plan.sibling_index;
+            auto right_sibling_index = plan.sibling_at_left ? current_node.get_node_index() : plan.sibling_index;
             reclaimer.retire(right_sibling_index, tile);
             if (plan.sibling_at_left) {
-              current_node_index = plan.sibling_index;
               current_node = sibling_node;
             }
           }
@@ -1092,9 +1088,8 @@ struct gpu_masstree {
             left_sibling_node.template store<true>();
             right_sibling_node.store_unlock();
             left_sibling_node.unlock();
-            reclaimer.retire(current_node_index, tile);
+            reclaimer.retire(current_node.get_node_index(), tile);
             reclaimer.retire(plan.sibling_index, tile);
-            current_node_index = current_root_index;
             current_node = parent_node;
           }
         }
@@ -1115,7 +1110,6 @@ struct gpu_masstree {
             current_node.borrow_right(sibling_node,
                                       parent_node,
                                       plan.left_location,
-                                      current_node_index,
                                       new_sibling_index,
                                       new_sibling_node);
             // write order: new_right -> left -> right -> parent
@@ -1138,9 +1132,9 @@ struct gpu_masstree {
         return current_node;
       }
       else { // traverse
-        parent_index = current_node_index;
-        current_node_index = current_node.find_next_and_sibling(
-            key_slice, sibling_index, sibling_at_left);
+        parent_index = current_node.get_node_index();
+        auto next_index = current_node.find_next_and_sibling(key_slice, sibling_index, sibling_at_left);
+        current_node = node_type(next_index, tile, allocator);
       }
     }
     assert(false);
@@ -1267,13 +1261,12 @@ struct gpu_masstree {
   // Return true if a side-link was traversed
   template <typename tile_type, typename node_type>
   DEVICE_QUALIFIER bool traverse_side_links(node_type& node,
-                                            size_type& node_index,
                                             const key_slice_type& key_slice,
                                             const tile_type& tile,
                                             device_allocator_context_type& allocator) {
     bool traversed = false;
     while (node.traverse_required(key_slice)) {
-      node_index = node.get_sibling_index();
+      auto node_index = node.get_sibling_index();
       node = node_type(node_index, tile, allocator);
       node.template load<true>();
       traversed |= true;
@@ -1285,13 +1278,12 @@ struct gpu_masstree {
   // Return true if a side-link was traversed
   template <typename tile_type, typename node_type>
   DEVICE_QUALIFIER bool traverse_side_links_with_locks(node_type& node,
-                                                       size_type& node_index,
                                                        const key_slice_type& key_slice,
                                                        const tile_type& tile,
                                                        device_allocator_context_type& allocator) {
     bool traversed = false;
     while (node.traverse_required(key_slice)) {
-      node_index = node.get_sibling_index();
+      auto node_index = node.get_sibling_index();
       node_type sibling_node = node_type(node_index, tile, allocator);
       node.unlock();
       sibling_node.lock();
