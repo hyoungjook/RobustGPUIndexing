@@ -28,7 +28,7 @@
 //#define RECLAIMER_DEBUG
 #endif
 
-template <uint32_t buffer_size_per_block = 16384>
+template <uint32_t buffer_size_per_block = 32768>
 struct simple_debra_reclaimer {
   using size_type = uint32_t;
   using pointer_type = size_type;

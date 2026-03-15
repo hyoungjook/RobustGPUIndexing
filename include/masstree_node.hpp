@@ -82,6 +82,13 @@ struct masstree_node {
     if constexpr (atomic) { tile_.sync(); }
     read_metadata_from_registers();
   }
+  template <bool atomic, bool acquire = true>
+  DEVICE_QUALIFIER void load_fetchonly() {
+    auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
+    if constexpr (atomic) { tile_.sync(); }
+    lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr + tile_.thread_rank());
+    if constexpr (atomic) { tile_.sync(); }
+  }
   template <bool atomic, bool release = true>
   DEVICE_QUALIFIER void store() {
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
@@ -89,6 +96,7 @@ struct masstree_node {
     utils::memory::store<elem_type, atomic, release>(node_ptr + tile_.thread_rank(), lane_elem_);
     if constexpr (atomic) { tile_.sync(); }
   }
+  template <bool atomic, bool release = true>
   DEVICE_QUALIFIER void store_unlock() {
     assert(is_locked());
     metadata_ &= ~lock_bit_mask_;
@@ -96,15 +104,8 @@ struct masstree_node {
       lane_elem_ &= ~lock_bit_mask_;
     }
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
-    tile_.sync();
-    utils::memory::store<elem_type, true, true>(node_ptr + tile_.thread_rank(), lane_elem_);
-    tile_.sync();
-  }
-  template <bool atomic, bool acquire = true>
-  DEVICE_QUALIFIER void load_fetchonly() {
-    auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
     if constexpr (atomic) { tile_.sync(); }
-    lane_elem_ = utils::memory::load<elem_type, atomic, acquire>(node_ptr + tile_.thread_rank());
+    utils::memory::store<elem_type, atomic, release>(node_ptr + tile_.thread_rank(), lane_elem_);
     if constexpr (atomic) { tile_.sync(); }
   }
 
@@ -594,29 +595,6 @@ struct masstree_node {
     write_metadata_to_registers();
   }
 
-  struct merge_plan {
-    value_type sibling_index;
-    int left_location;
-    bool sibling_at_left;
-  };
-  DEVICE_QUALIFIER bool decide_merge_left(int location) const {
-    // prioritize merge_left b/c borrow_right incurs additional malloc
-    bool merge_with_left_sibling = (location > 0);
-    return merge_with_left_sibling;
-  }
-  DEVICE_QUALIFIER merge_plan get_merge_plan(const value_type& child_index) const {
-    static_assert(underflow_num_keys_ >= 2);
-    assert(num_keys() >= 2);
-    auto ptr_exist = match_ptr_in_node(child_index);
-    if (ptr_exist == 0) return {0, -1, false};
-    merge_plan plan;
-    int child_location = __ffs(ptr_exist) - (1 + node_width);
-    plan.sibling_at_left = decide_merge_left(child_location);
-    plan.left_location = child_location - (plan.sibling_at_left ? 1 : 0);
-    plan.sibling_index = get_value_from_location(child_location + (plan.sibling_at_left ? -1 : 1));
-    return plan;
-  }
-
   DEVICE_QUALIFIER void make_garbage_node(bool has_sibling, value_type sibling_index = 0) {
     // num_keys = 0, has_sibling = has_sibling, is_garbage = true;
     metadata_ &= ~(num_keys_mask_ | sibling_bit_mask_);
@@ -628,9 +606,28 @@ struct masstree_node {
     write_metadata_to_registers();
   }
 
+  DEVICE_QUALIFIER bool decide_merge_left(int location) const {
+    // prioritize merge_left b/c borrow_right incurs additional malloc
+    bool merge_with_left_sibling = (location > 0);
+    return merge_with_left_sibling;
+  }
+  DEVICE_QUALIFIER int check_valid_merge_siblings(const size_type& child_index,
+                                                  const size_type& sibling_index) {
+    // if child and sibling is not adjacent or not exist, return -1
+    // if child is at left (child - sibling), return 0
+    // if sibling is at left (sibling - child), return 1
+    static_assert(underflow_num_keys_ >= 2);
+    assert(num_keys() >= 2);
+    auto child_exist = match_ptr_in_node(child_index);
+    auto sibling_exist = match_ptr_in_node(sibling_index);
+    if (child_exist == 0 || sibling_exist == 0) return -1;
+    int location_diff = __ffs(child_exist) - __ffs(sibling_exist);
+    if (location_diff == 1) return 1;
+    else if (location_diff == -1) return 0;
+    else return -1;
+  }
   DEVICE_QUALIFIER void merge(masstree_node& right_sibling_node,
-                              masstree_node& parent_node,
-                              int left_location) { 
+                              masstree_node& parent_node) {
     // this node is the left sibling
     // copy elements from right sibling node
     elem_type shifted_elem = tile_.shfl_up(right_sibling_node.lane_elem_, num_keys());
@@ -651,9 +648,8 @@ struct masstree_node {
     write_metadata_to_registers();
     // remove key from parent
     assert(!parent_node.is_border());
-    assert(left_location < parent_node.num_keys() - 1);
-    parent_node.do_erase(get_key_lane_from_location(left_location),
-                         get_value_lane_from_location(left_location + 1));
+    int right_sibling_lane_in_parent = __ffs(parent_node.match_ptr_in_node(right_sibling_node.node_index_)) - 1;
+    parent_node.do_erase(right_sibling_lane_in_parent - (1 + node_width), right_sibling_lane_in_parent);
     // set right sibling as empty node and connect it to this node
     right_sibling_node.make_garbage_node(true, node_index_);
   }
@@ -688,8 +684,7 @@ struct masstree_node {
   }
 
   DEVICE_QUALIFIER void borrow_left(masstree_node& sibling_node,
-                                    masstree_node& parent_node,
-                                    int left_location) {
+                                    masstree_node& parent_node) {
     // compute num shift; adjust similar to get_split_left_width()
     uint32_t num_shift = (sibling_node.num_keys() - num_keys()) / 2;
     if (is_border() && (sibling_node.get_keystate_from_location(sibling_node.num_keys() - num_shift - 1) == KEYSTATE_VALUE)) {
@@ -722,7 +717,8 @@ struct masstree_node {
     }
     sibling_node.write_metadata_to_registers();
     // update parent
-    if (tile_.thread_rank() == get_key_lane_from_location(left_location)) {
+    int left_sibling_location_in_parent = __ffs(parent_node.match_ptr_in_node(sibling_node.node_index_)) - (1 + node_width);
+    if (tile_.thread_rank() == get_key_lane_from_location(left_sibling_location_in_parent)) {
       parent_node.lane_elem_ = pivot_key;
     }
     //assert(!(
@@ -734,9 +730,8 @@ struct masstree_node {
 
   DEVICE_QUALIFIER void borrow_right(masstree_node& sibling_node,
                                      masstree_node& parent_node,
-                                     int left_location,
-                                     const value_type& new_sibling_index,
                                      masstree_node& new_sibling_node) {
+    // new_sibling_node: only its node_index_ is valid. this fills its lane_elem_.
     // compute num shift; adjust similar to get_split_left_width()
     uint32_t num_shift = (sibling_node.num_keys() - num_keys()) / 2;
     if (is_border() && (sibling_node.get_keystate_from_location(num_shift - 1) == KEYSTATE_VALUE)) {
@@ -760,15 +755,12 @@ struct masstree_node {
     write_metadata_to_registers();
     // current points to the new sibling
     if (tile_.thread_rank() == sibling_ptr_lane_) {
-      lane_elem_ = new_sibling_index;
+      lane_elem_ = new_sibling_node.node_index_;
     }
     // copy sibling to new_sibling
-    new_sibling_node = masstree_node(new_sibling_index,
-                                     sibling_node.lane_elem_,
-                                     sibling_node.metadata_,
-                                     sibling_node.keystate_,
-                                     tile_,
-                                     allocator_);
+    new_sibling_node.lane_elem_ = sibling_node.lane_elem_;
+    new_sibling_node.metadata_ = sibling_node.metadata_;
+    new_sibling_node.keystate_ = sibling_node.keystate_;
     // remove first num_shift entries from the new_sibling
     shifted_elem = tile_.shfl_down(new_sibling_node.lane_elem_, num_shift);
     shifted_keystate = is_border() ? tile_.shfl_down(new_sibling_node.keystate_, num_shift) : false;
@@ -782,11 +774,12 @@ struct masstree_node {
     // make old sibling empty
     sibling_node.make_garbage_node(true, node_index_);
     // update parent
-    if (tile_.thread_rank() == get_key_lane_from_location(left_location)) {
+    int right_sibling_lane_in_parent = __ffs(parent_node.match_ptr_in_node(sibling_node.node_index_)) - 1;
+    if (tile_.thread_rank() == right_sibling_lane_in_parent - (1 + node_width)) {
       parent_node.lane_elem_ = pivot_key;
     }
-    else if (tile_.thread_rank() == get_value_lane_from_location(left_location + 1)) {
-      parent_node.lane_elem_ = new_sibling_index;
+    else if (tile_.thread_rank() == right_sibling_lane_in_parent) {
+      parent_node.lane_elem_ = new_sibling_node.node_index_;
     }
     //assert(!(
     //  is_border() &&

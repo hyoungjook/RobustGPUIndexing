@@ -556,7 +556,7 @@ struct gpu_masstree {
             next_root_node.initialize_root();
             next_root_node.template store<true, false>();
             current_node.insert(key_slice, current_root_index, node_type::KEYSTATE_LINK);
-            current_node.store_unlock();
+            current_node.template store_unlock<true>();
             current_node = next_root_node;
             slice++;
             continue;
@@ -570,7 +570,7 @@ struct gpu_masstree {
         current_node.insert(key_slice, found_value, keystate);
       }
       // reaching here means we updated border node and it's done
-      current_node.store_unlock();
+      current_node.template store_unlock<true>();
       return true;
     }
     assert(false);
@@ -720,7 +720,7 @@ struct gpu_masstree {
                 continue;
               }
             }
-            current_node.store_unlock();
+            current_node.template store_unlock<true>();
             suffix.retire(reclaimer);
           }
           else {
@@ -741,7 +741,7 @@ struct gpu_masstree {
         }
         const bool success = current_node.erase(key_slice, node_type::KEYSTATE_VALUE);
         if (success) {
-          current_node.store_unlock();
+          current_node.template store_unlock<true>();
         }
         else {
           current_node.unlock();
@@ -780,9 +780,8 @@ struct gpu_masstree {
               // still empty, remove them
               next_layer_root_node.make_garbage_node(false);
               current_node.erase(key_slice, node_type::KEYSTATE_LINK);
-              next_layer_root_node.template store<true, false>();
-              current_node.store_unlock();
-              next_layer_root_node.unlock();
+              next_layer_root_node.template store_unlock<false>();
+              current_node.template store_unlock<true>();
               reclaimer.retire(next_layer_root_node.get_node_index(), tile);
             }
             else {
@@ -945,16 +944,17 @@ struct gpu_masstree {
           auto right_sibling_node = node_type(allocator.allocate(tile), tile, allocator);
           current_node.split(right_sibling_node, parent_index, parent_node);
           // write order: right -> left -> parent
-          right_sibling_node.template store<true>();
-          current_node.template store<true>();
-          parent_node.store_unlock();
-          // update current node if necessary
           if (current_node.get_high_key() < key_slice) {
-            current_node.unlock();
+            // continue traverse with right_sibling_node
+            right_sibling_node.template store<false>();
+            current_node.template store_unlock<true>();
+            parent_node.template store_unlock<true>();
             current_node = right_sibling_node;
           }
-          else {
-            right_sibling_node.unlock();
+          else {  // continue traverse with current_node 
+            right_sibling_node.template store_unlock<false>();
+            current_node.template store<true>();
+            parent_node.template store_unlock<true>();
           }
         }
         else { // (current_node.get_node_index() == root_node_index)
@@ -963,16 +963,17 @@ struct gpu_masstree {
           auto right_child_node = node_type(allocator.allocate(tile), tile, allocator);
           current_node.split_as_root(left_child_node, right_child_node);
           // write order: right -> left -> parent
-          right_child_node.template store<true>();
-          left_child_node.template store<true>();
-          current_node.store_unlock();
-          // update current node to left or right
           if (current_node.find_next(key_slice) == left_child_node.get_node_index()) {
-            right_child_node.unlock();
+            // continue traversal with left_child_node
+            right_child_node.template store_unlock<false>();
+            left_child_node.template store<false>();
+            current_node.template store_unlock<true>();
             current_node = left_child_node;
           }
-          else {
-            left_child_node.unlock();
+          else {  // continue traversal with right_child_node
+            right_child_node.template store<false>();
+            left_child_node.template store_unlock<false>();
+            current_node.template store_unlock<true>();
             current_node = right_child_node;
           }
           parent_index = root_index;
@@ -1082,7 +1083,7 @@ struct gpu_masstree {
         if (sibling_node.is_garbage() ||
             (sibling_at_left ?
              (sibling_node.get_sibling_index() != current_node.get_node_index()) :
-             (current_node.get_sibling_index() != sibling_index))) {
+             (current_node.get_sibling_index() != sibling_node.get_node_index()))) {
           current_node.unlock();
           sibling_node.unlock();
           current_node = node_type(root_index, tile, allocator);
@@ -1107,9 +1108,9 @@ struct gpu_masstree {
           continue;
         }
         // make sure parent is correct parent for both children
-        auto plan = parent_node.get_merge_plan(current_node.get_node_index());
-        if ((plan.left_location < 0) ||
-            (plan.sibling_index != sibling_index)) {
+        int sibling_at_left = parent_node.check_valid_merge_siblings(
+          current_node.get_node_index(), sibling_node.get_node_index());
+        if (sibling_at_left < 0) {
           current_node.unlock();
           sibling_node.unlock();
           parent_node.unlock();
@@ -1122,60 +1123,64 @@ struct gpu_masstree {
         // now all three nodes are locked
         if (current_node.is_mergeable(sibling_node)) {
           // merge
-          auto& left_sibling_node = plan.sibling_at_left ? sibling_node : current_node;
-          auto& right_sibling_node = plan.sibling_at_left ? current_node : sibling_node;
-          if (parent_index != root_index || parent_node.num_keys() > 2) {
-            left_sibling_node.merge(right_sibling_node, parent_node, plan.left_location);
-            // write order: left -> right -> parent
-            left_sibling_node.template store<true>();
-            right_sibling_node.template store<true>();
-            parent_node.store_unlock();
-            right_sibling_node.unlock();
-            auto right_sibling_index = plan.sibling_at_left ? current_node.get_node_index() : plan.sibling_index;
-            reclaimer.retire(right_sibling_index, tile);
-            if (plan.sibling_at_left) {
+          if (parent_node.get_node_index() != root_index || parent_node.num_keys() > 2) {
+            if (sibling_at_left) { // left_node = sibling_node, right_node = current_node
+              sibling_node.merge(current_node, parent_node);
+              // write order: left -> right -> parent
+              sibling_node.template store<false>();
+              current_node.template store_unlock<true>();
+              parent_node.template store_unlock<true>();
+              reclaimer.retire(current_node.get_node_index(), tile);
               current_node = sibling_node;
+            }
+            else { // left_node = current_node, right_node = sibling_node
+              current_node.merge(sibling_node, parent_node);
+              // write order: left -> right -> parent
+              current_node.template store<false>();
+              sibling_node.template store_unlock<true>();
+              parent_node.template store_unlock<true>();
+              reclaimer.retire(sibling_node.get_node_index(), tile);
             }
           }
           else {
-            parent_node.merge_to_root(root_index, left_sibling_node, right_sibling_node);
-            // write order: parent -> left -> right
-            parent_node.template store<true>();
-            left_sibling_node.template store<true>();
-            right_sibling_node.store_unlock();
-            left_sibling_node.unlock();
+            if (sibling_at_left) { // left_node = sibling_node, right_node = current_node
+              parent_node.merge_to_root(root_index, sibling_node, current_node);
+              // write order: parent -> left -> right
+              parent_node.template store<false>();
+              sibling_node.template store_unlock<true>();
+              current_node.template store_unlock<true>();
+            }
+            else { // left_node = current_node, right_node = sibling_node
+              parent_node.merge_to_root(root_index, current_node, sibling_node);
+              // write order: parent -> left -> right
+              parent_node.template store<false>();
+              current_node.template store_unlock<true>();
+              sibling_node.template store_unlock<true>();
+            }
             reclaimer.retire(current_node.get_node_index(), tile);
-            reclaimer.retire(plan.sibling_index, tile);
+            reclaimer.retire(sibling_node.get_node_index(), tile);
             current_node = parent_node;
           }
         }
         else {
           // borrow
-          if (plan.sibling_at_left) {
-            current_node.borrow_left(sibling_node, parent_node, plan.left_location);
+          if (sibling_at_left) { // left_node = sibling_node, right_node = current_node
+            current_node.borrow_left(sibling_node, parent_node);
             // write order: right -> left -> parent
-            current_node.template store<true>();
-            sibling_node.template store<true>();
-            parent_node.store_unlock();
-            sibling_node.unlock();
+            current_node.template store<false>();
+            sibling_node.template store_unlock<true>();
+            parent_node.template store_unlock<true>();
           }
-          else {
+          else { // left_node = current_node, right_node = sibling_node
             // borrow_right need additional node to ensure correct lock-free traversal
-            auto new_sibling_index = allocator.allocate(tile);
-            auto new_sibling_node = node_type(new_sibling_index, tile, allocator);
-            current_node.borrow_right(sibling_node,
-                                      parent_node,
-                                      plan.left_location,
-                                      new_sibling_index,
-                                      new_sibling_node);
+            auto new_sibling_node = node_type(allocator.allocate(tile), tile, allocator);
+            current_node.borrow_right(sibling_node, parent_node, new_sibling_node);
             // write order: new_right -> left -> right -> parent
-            new_sibling_node.template store<true>();
+            new_sibling_node.template store_unlock<false>();
             current_node.template store<true>();
-            sibling_node.template store<true>();
-            parent_node.store_unlock();
-            sibling_node.unlock();
-            new_sibling_node.unlock();
-            reclaimer.retire(sibling_index, tile);
+            sibling_node.template store_unlock<true>();
+            parent_node.template store_unlock<true>();
+            reclaimer.retire(sibling_node.get_node_index(), tile);
           }
         }
         // now, current_node is not underflow. if it's not border, unlock.
