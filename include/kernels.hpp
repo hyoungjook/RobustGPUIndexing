@@ -58,7 +58,7 @@ __global__ void batch_kernel(index_type index,
        thread_id += (num_worker_blocks * block_size)) {
     bool task_exists = (thread_id < num_requests);
     typename device_func::dev_regs regs;
-    if (task_exists) { regs = func.load(index, tile, allocator, thread_id); }
+    func.load(regs, index, tile, allocator, thread_id, task_exists);
     if constexpr (do_reclaim) { reclaimer.begin_critical_section(block_wide_tile, allocator); }
     auto work_queue = tile.ballot(task_exists);
     while (work_queue) {
@@ -121,15 +121,15 @@ struct insert_device_func {
   };
   // device-side functions
   template <typename masstree, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER dev_regs load(masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id) const {
-    return dev_regs{
-      .key = &d_keys[max_key_length * thread_id],
-      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
-      .value = d_values[thread_id],
-      .root_lane_elem = (reuse_root ? 
-        tree.template cooperative_fetch_root<true>(tile, allocator) :
-        0)
-    };
+  DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
+    if (task_exists) {
+      regs.key = &d_keys[max_key_length * thread_id];
+      regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
+      regs.value = d_values[thread_id];
+    }
+    if constexpr (reuse_root) {
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
+    }
   }
   template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
@@ -163,14 +163,14 @@ struct find_device_func {
   };
   // device-side functions
   template <typename masstree, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER dev_regs load(masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id) const {
-    return dev_regs{
-      .key = &d_keys[max_key_length * thread_id],
-      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
-      .root_lane_elem = (reuse_root ? 
-        tree.template cooperative_fetch_root<concurrent>(tile, allocator) :
-        0)
-    };
+  DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
+    if (task_exists) {
+      regs.key = &d_keys[max_key_length * thread_id];
+      regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
+    }
+    if constexpr (reuse_root) {
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
+    }
   }
   template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
@@ -203,14 +203,14 @@ struct erase_device_func {
   };
   // device-side functions
   template <typename masstree, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER dev_regs load(masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id) const {
-    return dev_regs{
-      .key = &d_keys[max_key_length * thread_id],
-      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
-      .root_lane_elem = (reuse_root ? 
-        tree.template cooperative_fetch_root<concurrent>(tile, allocator) :
-        0)
-    };
+  DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
+    if (task_exists) {
+      regs.key = &d_keys[max_key_length * thread_id];
+      regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
+    }
+    if constexpr (reuse_root) {
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
+    }
   }
   template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
@@ -254,19 +254,19 @@ struct scan_device_func {
   };
   // device-side functions
   template <typename masstree, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER dev_regs load(masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id) const {
-    return dev_regs{
-      .lower_key = &d_lower_keys[max_key_length * thread_id],
-      .lower_key_length = d_lower_key_lengths ? d_lower_key_lengths[thread_id] : max_key_length,
-      .upper_key = d_upper_keys ? &d_upper_keys[max_key_length * thread_id] : nullptr,
-      .upper_key_length = d_upper_key_lengths ? d_upper_key_lengths[thread_id] : max_key_length,
-      .value = d_values ? &d_values[max_count_per_query * thread_id] : nullptr,
-      .out_key = d_out_keys ? &d_out_keys[max_count_per_query * max_key_length * thread_id] : nullptr,
-      .out_key_length = d_out_key_lengths ? &d_out_key_lengths[max_count_per_query * thread_id] : nullptr,
-      .root_lane_elem = (reuse_root ?
-        tree.template cooperative_fetch_root<concurrent>(tile, allocator) :
-        0)
-    };
+  DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
+    if (task_exists) {
+      regs.lower_key = &d_lower_keys[max_key_length * thread_id];
+      regs.lower_key_length = d_lower_key_lengths ? d_lower_key_lengths[thread_id] : max_key_length;
+      regs.upper_key = d_upper_keys ? &d_upper_keys[max_key_length * thread_id] : nullptr;
+      regs.upper_key_length = d_upper_key_lengths ? d_upper_key_lengths[thread_id] : max_key_length;
+      regs.value = d_values ? &d_values[max_count_per_query * thread_id] : nullptr;
+      regs.out_key = d_out_keys ? &d_out_keys[max_count_per_query * max_key_length * thread_id] : nullptr;
+      regs.out_key_length = d_out_key_lengths ? &d_out_key_lengths[max_count_per_query * thread_id] : nullptr;
+    }
+    if constexpr (reuse_root) {
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
+    }
   }
   template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
@@ -322,16 +322,16 @@ struct mixed_device_func {
   };
   // device-side functions
   template <typename masstree, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER dev_regs load(masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id) const {
-    return dev_regs{
-      .type = d_types[thread_id],
-      .key = &d_keys[max_key_length * thread_id],
-      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
-      .value = d_values[thread_id],
-      .root_lane_elem = (reuse_root ? 
-        tree.template cooperative_fetch_root<true>(tile, allocator) :
-        0)
-    };
+  DEVICE_QUALIFIER void load(dev_regs& regs, masstree& tree, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
+    if (task_exists) {
+      regs.type = d_types[thread_id];
+      regs.key = &d_keys[max_key_length * thread_id];
+      regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
+      regs.value = d_values[thread_id];
+    }
+    if constexpr (reuse_root) {
+      regs.root_lane_elem = tree.template cooperative_fetch_root<true>(tile, allocator);
+    }
   }
   template <typename masstree, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(masstree& tree, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
@@ -414,12 +414,12 @@ struct insert_device_func {
   };
   // device-side functions
   template <typename hashtable, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER dev_regs load(hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id) const {
-    return dev_regs{
-      .key = &d_keys[max_key_length * thread_id],
-      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
-      .value = d_values[thread_id]
-    };
+  DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
+    if (task_exists) {
+      regs.key = &d_keys[max_key_length * thread_id];
+      regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
+      regs.value = d_values[thread_id];
+    }
   }
   template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
@@ -447,11 +447,11 @@ struct find_device_func {
   };
   // device-side functions
   template <typename hashtable, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER dev_regs load(hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id) const {
-    return dev_regs{
-      .key = &d_keys[max_key_length * thread_id],
-      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length
-    };
+  DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
+    if (task_exists) {
+      regs.key = &d_keys[max_key_length * thread_id];
+      regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
+    }
   }
   template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
@@ -481,11 +481,11 @@ struct erase_device_func {
   };
   // device-side functions
   template <typename hashtable, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER dev_regs load(hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id) const {
-    return dev_regs{
-      .key = &d_keys[max_key_length * thread_id],
-      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
-    };
+  DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
+    if (task_exists) {
+      regs.key = &d_keys[max_key_length * thread_id];
+      regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
+    }
   }
   template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
@@ -521,13 +521,13 @@ struct mixed_device_func {
   };
   // device-side functions
   template <typename hashtable, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER dev_regs load(hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id) const {
-    return dev_regs{
-      .type = d_types[thread_id],
-      .key = &d_keys[max_key_length * thread_id],
-      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
-      .value = d_values[thread_id]
-    };
+  DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
+    if (task_exists) {
+      regs.type = d_types[thread_id];
+      regs.key = &d_keys[max_key_length * thread_id];
+      regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
+      regs.value = d_values[thread_id];
+    }
   }
   template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
@@ -604,12 +604,12 @@ struct insert_device_func {
   };
   // device-side functions
   template <typename hashtable, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER dev_regs load(hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id) const {
-    return dev_regs{
-      .key = &d_keys[max_key_length * thread_id],
-      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
-      .value = d_values[thread_id]
-    };
+  DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
+    if (task_exists) {
+      regs.key = &d_keys[max_key_length * thread_id];
+      regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
+      regs.value = d_values[thread_id];
+    }
   }
   template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
@@ -637,11 +637,11 @@ struct find_device_func {
   };
   // device-side functions
   template <typename hashtable, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER dev_regs load(hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id) const {
-    return dev_regs{
-      .key = &d_keys[max_key_length * thread_id],
-      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length
-    };
+  DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
+    if (task_exists) {
+      regs.key = &d_keys[max_key_length * thread_id];
+      regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
+    }
   }
   template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
@@ -671,11 +671,11 @@ struct erase_device_func {
   };
   // device-side functions
   template <typename hashtable, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER dev_regs load(hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id) const {
-    return dev_regs{
-      .key = &d_keys[max_key_length * thread_id],
-      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
-    };
+  DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
+    if (task_exists) {
+      regs.key = &d_keys[max_key_length * thread_id];
+      regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
+    }
   }
   template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
@@ -713,13 +713,13 @@ struct mixed_device_func {
   };
   // device-side functions
   template <typename hashtable, typename tile_type, typename allocator_type>
-  DEVICE_QUALIFIER dev_regs load(hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id) const {
-    return dev_regs{
-      .type = d_types[thread_id],
-      .key = &d_keys[max_key_length * thread_id],
-      .key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length,
-      .value = d_values[thread_id]
-    };
+  DEVICE_QUALIFIER void load(dev_regs& regs, hashtable& table, const tile_type& tile, allocator_type& allocator, uint32_t thread_id, bool task_exists) const {
+    if (task_exists) {
+      regs.type = d_types[thread_id];
+      regs.key = &d_keys[max_key_length * thread_id];
+      regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
+      regs.value = d_values[thread_id];
+    }
   }
   template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
