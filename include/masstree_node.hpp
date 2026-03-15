@@ -201,23 +201,24 @@ struct masstree_node {
   DEVICE_QUALIFIER bool is_locked() const {
     return static_cast<bool>(metadata_ & lock_bit_mask_);
   }
-  DEVICE_QUALIFIER bool try_lock() {
-    elem_type old;
+  DEVICE_QUALIFIER bool try_lock_load() {
     auto node_ptr = reinterpret_cast<elem_type*>(allocator_.address(node_index_));
     if (tile_.thread_rank() == metadata_lane_) {
       cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(node_ptr[metadata_lane_]);
-      old = metadata_ref.fetch_or(lock_bit_mask_, cuda::memory_order_relaxed);
+      lane_elem_ = metadata_ref.fetch_or(lock_bit_mask_, cuda::memory_order_relaxed);
     }
-    old = tile_.shfl(old, metadata_lane_);
-    bool is_locked = (old & lock_bit_mask_) == 0; // if previously not locked, now it's locked
-    if (is_locked) { cuda::atomic_thread_fence(cuda::memory_order_acquire, cuda::thread_scope_device); }
+    // if previously not locked, now it's locked
+    bool is_locked = (tile_.shfl(lane_elem_, metadata_lane_) & lock_bit_mask_) == 0;
+    if (is_locked) {
+      tile_.sync();
+      lane_elem_ = utils::memory::load<elem_type, true, true>(node_ptr + tile_.thread_rank());
+      tile_.sync();
+      read_metadata_from_registers();
+    }
     return is_locked;
-    // do not need to update registers; if locked, the code will load() again.
-    // if lock failed, this node object will be disposed.
   }
-  DEVICE_QUALIFIER void lock() {
-    while (!try_lock());
-    // the code will load() again
+  DEVICE_QUALIFIER void lock_load() {
+    while (!try_lock_load());
   }
   DEVICE_QUALIFIER void unlock() {
     assert(is_locked());

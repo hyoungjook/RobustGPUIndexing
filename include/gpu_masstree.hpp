@@ -676,8 +676,7 @@ struct gpu_masstree {
               continue;
             }
             if (!border_node_locked_by_me) {
-              current_node.lock();
-              current_node.template load<true>();
+              current_node.lock_load();
               if constexpr (concurrent) {
                 traverse_side_links_with_locks(current_node, key_slice, tile, allocator);
               }
@@ -774,8 +773,7 @@ struct gpu_masstree {
             // check next layer root node
             // found_value is next_layer_root_node_index
             auto next_layer_root_node = node_type(found_value, tile, allocator);
-            next_layer_root_node.lock();
-            next_layer_root_node.template load<true>();
+            next_layer_root_node.lock_load();
             if (!next_layer_root_node.is_garbage() && next_layer_root_node.num_keys() == 0) {
               // still empty, remove them
               next_layer_root_node.make_garbage_node(false);
@@ -844,8 +842,7 @@ struct gpu_masstree {
           if (early_exit.check(current_node)) {
             return;
           }
-          current_node.lock();
-          current_node.template load<true>();
+          current_node.lock_load();
           if constexpr (concurrent) {
             traverse_side_links_with_locks(current_node, key_slice, tile, allocator);
           }
@@ -888,8 +885,7 @@ struct gpu_masstree {
       // lock the node & traverse again, if it's full or border
       // if it's full, the parent should be known
       if (current_node.is_full() || current_node.is_border()) {
-        if (current_node.try_lock()) {
-          current_node.template load<true>();
+        if (current_node.try_lock_load()) {
           if (!current_node.is_full()) {
             link_traversed |= traverse_side_links_with_locks(current_node, key_slice, tile, allocator);
           }
@@ -927,8 +923,7 @@ struct gpu_masstree {
         if (current_node.get_node_index() != root_index) {
           assert(!current_node.is_root());
           auto parent_node = node_type(parent_index, tile, allocator);
-          parent_node.lock();
-          parent_node.template load<true>();
+          parent_node.lock_load();
           // parent should be not full, not garbage, and correct parent
           if (parent_node.is_full() ||
               parent_node.is_garbage() ||
@@ -1023,8 +1018,7 @@ struct gpu_masstree {
       // lock the node & traverse again, if it's underflow or border
       // if it's underflow, the parent and sibling should be known
       if (current_node.is_underflow() || current_node.is_border()) {
-        if (current_node.try_lock()) {
-          current_node.template load<true>();
+        if (current_node.try_lock_load()) {
           if (!current_node.is_underflow()) {
             link_traversed |= traverse_side_links_with_locks(current_node, key_slice, tile, allocator);
           }
@@ -1066,11 +1060,11 @@ struct gpu_masstree {
         // lock the sibling first
         auto sibling_node = node_type(sibling_index, tile, allocator);
         if (sibling_at_left) {
-          sibling_node.lock();
+          sibling_node.lock_load();
         }
         else {
           // global lock order: right -> left; use try_lock to avoid deadlock
-          if (!sibling_node.try_lock()) {
+          if (!sibling_node.try_lock_load()) {
             current_node.unlock();
             current_node = node_type(parent_index, tile, allocator);
             current_node.template load<true>();
@@ -1078,7 +1072,6 @@ struct gpu_masstree {
             continue;
           }
         }
-        sibling_node.template load<true>();
         // check sibling validity
         if (sibling_node.is_garbage() ||
             (sibling_at_left ?
@@ -1094,8 +1087,7 @@ struct gpu_masstree {
         }
         // lock the parent
         auto parent_node = node_type(parent_index, tile, allocator);
-        parent_node.lock();
-        parent_node.template load<true>();
+        parent_node.lock_load();
         // make sure parent is not garbage and not underflow
         if (parent_node.is_garbage() || parent_node.is_underflow()) {
           current_node.unlock();
@@ -1348,9 +1340,8 @@ struct gpu_masstree {
       auto node_index = node.get_sibling_index();
       node_type sibling_node = node_type(node_index, tile, allocator);
       node.unlock();
-      sibling_node.lock();
+      sibling_node.lock_load();
       node = sibling_node;
-      node.template load<true>();
       traversed |= true;
     }
     return traversed;
