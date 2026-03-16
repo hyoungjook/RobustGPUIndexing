@@ -260,7 +260,7 @@ struct gpu_linearhashtable {
         continue;
       }
       suffix_type suffix_if_found(tile, allocator);
-      int location_if_found = coop_traverse_until_found<true, use_hash_tag>(
+      int location_if_found = coop_traverse_until_found<false, use_hash_tag>( // use weak load here b/c the first load did memory_order_acquire
         node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
       if (location_if_found >= 0) { // already exists
         if (update_if_exists) {
@@ -270,7 +270,7 @@ struct gpu_linearhashtable {
           }
           else {
             node.update(location_if_found, value);
-            node.template store_to_allocator<true>();
+            node.template store_to_allocator<false>();
           }
         }
         node_type::unlock(head_index, tile, allocator);
@@ -291,14 +291,15 @@ struct gpu_linearhashtable {
         new_node.initialize_empty(false, node.get_local_depth());
         new_node.insert(first_slice, to_insert, more_key);
         // write order: new_node -> node
-        new_node.template store_to_allocator<true>();
+        new_node.template store_to_allocator<false>();
         node.set_next_index(next_index);
         node.set_has_next();
+        node.template store_to_allocator<true>();
       }
       else { // !node.is_full()
         node.insert(first_slice, to_insert, more_key);
+        node.template store_to_allocator<false>();
       }
-      node.template store_to_allocator<true>();
       // check if chain is too long (not one)
       if (!node.is_head()) {
         // check if split is possible
@@ -370,12 +371,12 @@ struct gpu_linearhashtable {
             if (!node.has_next()) { break; }
             auto next_index = node.get_next_index();
             node = node_type(next_index, tile, allocator);
-            node.template load_from_allocator<true>();
+            node.template load_from_allocator<false>(); // first load after lock already did memory_order_acquire
             reclaimer.retire(next_index, tile);
           }
           // store last nodes of two new buckets
-          new_node0.template store_to_allocator<true>();
-          new_node1.template store_to_allocator<true>();
+          new_node0.template store_to_allocator<false>();
+          new_node1.template store_to_allocator<true>();  // last store releases before updating directory
           // publish new buckets: 
           auto local_depth_mask = (1u << local_depth);
           directory_size = d_global_state_->template load_directory_size<true>();
@@ -487,12 +488,12 @@ struct gpu_linearhashtable {
           node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, reclaimer);
       }
       else {
-        location_if_found = coop_traverse_until_found<true, use_hash_tag>(
+        location_if_found = coop_traverse_until_found<false, use_hash_tag>(  // use weak load here b/c the first load did memory_order_acquire
           node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
       }
       if (location_if_found >= 0) { // exists
         node.erase(location_if_found);
-        node.template store_to_allocator<true>();
+        node.template store_to_allocator<false>();
         if (more_key) {
           suffix_if_found.retire(reclaimer);
         }
@@ -536,7 +537,7 @@ struct gpu_linearhashtable {
                 node1.template load_from_allocator<true>();
                 if (!node1.is_garbage() && node1.get_local_depth() == local_depth) {
                   // do merge!
-                  // order: decrement local depth -> update pointers
+                  // order: node1.decrement local depth -> update pointers -> node.make garbage
                   node1.set_local_depth(local_depth - 1);
                   node1.template store_to_allocator<true>();
                   auto local_depth_mask = (1u << local_depth);
@@ -545,12 +546,12 @@ struct gpu_linearhashtable {
                     directory_entry_at(index, allocator) = head1_index;
                   }
                   node.make_garbage();
-                  node.template store_to_allocator<false>();
+                  node.template store_to_allocator<true>();
                   reclaimer.retire(head0_index, tile);
                   cascade_merge = (node1.num_keys() == 0 && !node1.has_next());
                 }
               }
-              node_type::unlock(head0_index, tile, allocator);
+              node_type::unlock<false>(head0_index, tile, allocator);
               node_type::unlock(head1_index, tile, allocator);
               // if cascading
               if (cascade_merge) {
@@ -781,14 +782,14 @@ struct gpu_linearhashtable {
         }
       }
       if (current_node_store_deferred) {
-        node.template store_to_allocator<true>();
+        node.template store_to_allocator<false>();  // future unlock will do memory_order_release
         current_node_store_deferred = false;
       }
       // done searching this node, move on to next
       if (!node.has_next()) { break; }
       auto next_index = node.get_next_index();
       auto next_node = node_type(next_index, tile, allocator);
-      next_node.template load_from_allocator<true>();
+      next_node.template load_from_allocator<false>();  // first load after lock did memory_order_acquire
       if (node.is_mergeable(next_node)) {
         node.merge(next_node);
         current_node_store_deferred = true;

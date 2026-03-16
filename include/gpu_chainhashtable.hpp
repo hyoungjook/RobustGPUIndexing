@@ -213,7 +213,7 @@ struct gpu_chainhashtable {
     suffix_type suffix_if_found(tile, allocator);
     auto node = node_type(bucket_index, tile, allocator);
     node.template load_from_array<true>(d_table_);
-    int location_if_found = coop_traverse_until_found<true, use_hash_tag>(
+    int location_if_found = coop_traverse_until_found<false, use_hash_tag>( // use weak load here b/c the first load did memory_order_acquire
         node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
     if (location_if_found >= 0) { // already exists
       if (update_if_exists) {
@@ -223,7 +223,7 @@ struct gpu_chainhashtable {
         }
         else {
           node.update(location_if_found, value);
-          node.template store_head_to_array_aux_to_allocator<true>(d_table_);
+          node.template store_head_to_array_aux_to_allocator<false>(d_table_);
         }
       }
       node_type::unlock(d_table_, bucket_index, tile);
@@ -244,7 +244,7 @@ struct gpu_chainhashtable {
       new_node.initialize_empty(false);
       new_node.insert(first_slice, to_insert, more_key);
       // write order: new_node -> node
-      new_node.template store_to_allocator<true>();
+      new_node.template store_to_allocator<false>();
       node.set_next_index(next_index);
       node.set_has_next();
     }
@@ -287,12 +287,12 @@ struct gpu_chainhashtable {
         node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator, reclaimer);
     }
     else {
-      location_if_found = coop_traverse_until_found<true, use_hash_tag>(
+      location_if_found = coop_traverse_until_found<false, use_hash_tag>( // use weak load here b/c the first load did memory_order_acquire
         node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator);
     }
     if (location_if_found >= 0) { // exists
       node.erase(location_if_found);
-      node.template store_head_to_array_aux_to_allocator<true>(d_table_);
+      node.template store_head_to_array_aux_to_allocator<false>(d_table_);
       if (more_key) {
         suffix_if_found.retire(reclaimer);
       }
@@ -393,14 +393,14 @@ struct gpu_chainhashtable {
         }
       }
       if (current_node_store_deferred) {
-        node.template store_head_to_array_aux_to_allocator<true>(d_table_);
+        node.template store_head_to_array_aux_to_allocator<false>(d_table_);  // future unlock will do memory_order_release
         current_node_store_deferred = false;
       }
       // done searching this node, move on to next
       if (!node.has_next()) { break; }
       auto next_index = node.get_next_index();
       auto next_node = node_type(next_index, tile, allocator);
-      next_node.template load_from_allocator<true>();
+      next_node.template load_from_allocator<false>();  // first load after lock did memory_order_acquire
       if (node.is_mergeable(next_node)) {
         node.merge(next_node);
         current_node_store_deferred = true;

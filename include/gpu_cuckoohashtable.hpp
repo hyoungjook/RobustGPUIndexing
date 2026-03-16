@@ -180,7 +180,7 @@ struct gpu_cuckoohashtable {
     while (true) {
       #define TRY_GET_KEY_FROM_NODE(node) \
       node.template load_from_array<concurrent>(d_table_); \
-      location_if_found = coop_get_key_location_from_node<concurrent, use_hash_tag>( \
+      location_if_found = coop_get_key_location_from_node<use_hash_tag>( \
           node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator); \
       if (location_if_found >= 0) { \
         return more_key ? suffix_if_found.get_value() : node.get_value_from_location(location_if_found); \
@@ -224,7 +224,7 @@ struct gpu_cuckoohashtable {
       bool try_lock_and_insert = false;
       #define CHECK_KEY_OR_SPACE_EXISTS_IN_NODE(node) \
       node.template load_from_array<true>(d_table_); \
-      location_if_found = coop_get_key_location_from_node<true, use_hash_tag>( \
+      location_if_found = coop_get_key_location_from_node<use_hash_tag>( \
           node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator); \
       if (location_if_found >= 0) { \
         if (!update_if_exists) { return false; } \
@@ -242,7 +242,7 @@ struct gpu_cuckoohashtable {
         // Check if exists
         #define CHECK_KEY_EXISTS_IN_NODE(node) \
         node.template load_from_array<true>(d_table_); \
-        location_if_found = coop_get_key_location_from_node<true, use_hash_tag>( \
+        location_if_found = coop_get_key_location_from_node<use_hash_tag>( \
             node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator); \
         if (location_if_found >= 0) { \
           if (update_if_exists) { \
@@ -252,10 +252,10 @@ struct gpu_cuckoohashtable {
             } \
             else { \
               node.update(location_if_found, value); \
-              node.template store_to_array<true>(d_table_); \
+              node.template store_to_array<false>(d_table_); \
             } \
           } \
-          node_type::unlock(d_table_, node0.get_node_index(), tile); \
+          node_type::unlock<false>(d_table_, node0.get_node_index(), tile); \
           node_type::unlock(d_table_, node1.get_node_index(), tile); \
           return update_if_exists; \
         }
@@ -274,8 +274,8 @@ struct gpu_cuckoohashtable {
             suffix.store_head(); \
           } \
           node.insert(first_slice, to_insert, more_key); \
-          node.template store_to_array<true>(d_table_); \
-          node_type::unlock(d_table_, node0.get_node_index(), tile); \
+          node.template store_to_array<false>(d_table_); \
+          node_type::unlock<false>(d_table_, node0.get_node_index(), tile); \
           node_type::unlock(d_table_, node1.get_node_index(), tile); \
           return true; \
         }
@@ -283,7 +283,7 @@ struct gpu_cuckoohashtable {
         TRY_INSERT_TO_NODE_IF_NOT_FULL(node1)
         #undef TRY_INSERT_TO_NODE_IF_NOT_FULL
         // All nodes are full.
-        node_type::unlock(d_table_, node0.get_node_index(), tile);
+        node_type::unlock<false>(d_table_, node0.get_node_index(), tile);
         node_type::unlock(d_table_, node1.get_node_index(), tile);
       }
       // === Phase 3. Try make space with cuckoo, BFS depth=1 ===
@@ -299,8 +299,8 @@ struct gpu_cuckoohashtable {
           value_type target_value = node.get_value_from_location(loc); \
           bool target_suffix = node.get_suffix_of_location(loc); \
           lock_two_nodes_in_order(node, other_node, tile); \
-          node.template load_from_array<true>(d_table_); \
-          other_node.template load_from_array<true>(d_table_); \
+          node.template load_from_array<true>(d_table_); /*first load use acquire*/ \
+          other_node.template load_from_array<false>(d_table_); \
           if (!other_node.is_full()) { \
             /*check the key still exists in node*/ \
             uint32_t to_check = node.match_key_value_in_node(target_key, target_value, target_suffix); \
@@ -313,8 +313,8 @@ struct gpu_cuckoohashtable {
                 cuda::atomic_ref<size_type, cuda::thread_scope_device> version_ref(d_versions_[(target_key * hash_prime2) % version_counter_size]); \
                 version_ref.fetch_add(1, cuda::memory_order_release); \
               } \
-              other_node.template store_to_array<true>(d_table_); \
-              node.template store_to_array<true>(d_table_); \
+              other_node.template store_to_array<false>(d_table_); \
+              node.template store_to_array<false>(d_table_); \
               if (tile.thread_rank() == 0) { \
                 cuda::atomic_ref<size_type, cuda::thread_scope_device> version_ref(d_versions_[(target_key * hash_prime2) % version_counter_size]); \
                 version_ref.fetch_add(1, cuda::memory_order_release); \
@@ -322,7 +322,7 @@ struct gpu_cuckoohashtable {
               cuckoo_succeed = true; \
             } \
           } \
-          node_type::unlock(d_table_, node.get_node_index(), tile); \
+          node_type::unlock<false>(d_table_, node.get_node_index(), tile); \
           node_type::unlock(d_table_, other_node.get_node_index(), tile); \
           if (cuckoo_succeed) { break; } \
         } \
@@ -358,15 +358,15 @@ struct gpu_cuckoohashtable {
     suffix_type suffix_if_found(tile, allocator);
     #define TRY_ERASE_KEY_IN_NODE(node) \
     node.template load_from_array<true>(d_table_); \
-    location_if_found = coop_get_key_location_from_node<true, use_hash_tag>( \
+    location_if_found = coop_get_key_location_from_node<use_hash_tag>( \
         node, first_slice, more_key, key, key_length, suffix_if_found, tile, allocator); \
     if (location_if_found >= 0) { \
       node.erase(location_if_found); \
-      node.template store_to_array<true>(d_table_); \
+      node.template store_to_array<false>(d_table_); \
       if (more_key) { \
         suffix_if_found.retire(reclaimer); \
       } \
-      node_type::unlock(d_table_, node0.get_node_index(), tile); \
+      node_type::unlock<false>(d_table_, node0.get_node_index(), tile); \
       node_type::unlock(d_table_, node1.get_node_index(), tile); \
       return true; \
     }
@@ -374,7 +374,7 @@ struct gpu_cuckoohashtable {
     TRY_ERASE_KEY_IN_NODE(node1)
     #undef TRY_ERASE_KEY_IN_NODE
     // not found
-    node_type::unlock(d_table_, node0.get_node_index(), tile);
+    node_type::unlock<false>(d_table_, node0.get_node_index(), tile);
     node_type::unlock(d_table_, node1.get_node_index(), tile);
     return false;
   }
@@ -385,7 +385,7 @@ struct gpu_cuckoohashtable {
     return (table_i * num_buckets_per_hf_) + (bucket_index_hash % num_buckets_per_hf_);
   }
 
-  template <bool concurrent, bool use_hash_tag, typename tile_type>
+  template <bool use_hash_tag, typename tile_type>
   DEVICE_QUALIFIER int coop_get_key_location_from_node(hashtable_node<tile_type, device_allocator_context_type>& node,
                                                        const key_slice_type& first_slice,
                                                        bool more_key,

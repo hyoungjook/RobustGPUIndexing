@@ -192,12 +192,18 @@ struct hashtable_node {
   static DEVICE_QUALIFIER void lock(elem_type* table_ptr, size_type bucket_index, const tile_type& tile) {
     while (!try_lock(table_ptr, bucket_index, tile));
   }
+  template <bool release = true>
   static DEVICE_QUALIFIER void unlock(elem_type* table_ptr, size_type bucket_index, const tile_type& tile) {
     // unlock, only using the pointer, not load the entire register
     auto bucket_ptr = table_ptr + (static_cast<std::size_t>(2 * node_width) * bucket_index);
     if (tile.thread_rank() == metadata_lane_) {
-      cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_]);
-      metadata_ref.fetch_and(~lock_bit_mask_, cuda::memory_order_release);
+      if constexpr (release) {
+        cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_]);
+        metadata_ref.fetch_and(~lock_bit_mask_, cuda::memory_order_release);
+      }
+      else {
+        bucket_ptr[metadata_lane_] &= ~lock_bit_mask_;
+      }
     }
   }
   // lock/unlock for head nodes in slab allocator (linearHT)
@@ -216,12 +222,18 @@ struct hashtable_node {
   static DEVICE_QUALIFIER void lock(size_type head_index, const tile_type& tile, allocator_type& allocator) {
     while (!try_lock(head_index, tile, allocator));
   }
+  template <bool release = true>
   static DEVICE_QUALIFIER void unlock(size_type head_index, const tile_type& tile, allocator_type& allocator) {
     // unlock, only using the pointer, not load the entire register
     auto bucket_ptr = reinterpret_cast<elem_type*>(allocator.address(head_index));
     if (tile.thread_rank() == metadata_lane_) {
-      cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_]);
-      metadata_ref.fetch_and(~lock_bit_mask_, cuda::memory_order_release);
+      if constexpr (release) {
+        cuda::atomic_ref<elem_type, cuda::thread_scope_device> metadata_ref(bucket_ptr[metadata_lane_]);
+        metadata_ref.fetch_and(~lock_bit_mask_, cuda::memory_order_release);
+      }
+      else {
+        bucket_ptr[metadata_lane_] &= ~lock_bit_mask_;
+      }
     }
   }
 
