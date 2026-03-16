@@ -18,6 +18,7 @@
 #include <cassert>
 
 #define DEVICE_QUALIFIER __device__ __forceinline__
+#define DEVICE_QUALIFIER_NOINLINE __device__ __noinline__
 #define HOST_DEVICE_QUALIFIER __device__ __host__ __forceinline__
 
 #define cuda_try(call)                                                                  \

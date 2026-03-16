@@ -28,7 +28,7 @@
 //#define RECLAIMER_DEBUG
 #endif
 
-template <uint32_t buffer_size_per_block = 16384>
+template <uint32_t buffer_size_per_block = 32768>
 struct simple_debra_reclaimer {
   using size_type = uint32_t;
   using pointer_type = size_type;
@@ -269,7 +269,7 @@ private:
   }
 
   template <typename tile_type>
-  DEVICE_QUALIFIER void scan_announce_and_advance_epoch(const tile_type& tile, size_type cur_epoch) {
+  DEVICE_QUALIFIER_NOINLINE void scan_announce_and_advance_epoch(const tile_type& tile, size_type cur_epoch) {
     auto rounded_active_blocks = (num_active_blocks_ + tile.size() - 1) / tile.size() * tile.size();
     for (uint32_t i = tile.thread_rank(); i < rounded_active_blocks; i += tile.size()) {
       bool is_quiescent = true;

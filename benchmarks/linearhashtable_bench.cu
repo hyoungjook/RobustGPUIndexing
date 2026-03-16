@@ -41,7 +41,8 @@ template <typename linearhashtable_type,
           bool use_hash_tag = true,
           bool tag_use_same_hash = true,
           bool erase_merge_buckets = true,
-          bool erase_merge_chains = true>
+          bool erase_merge_chains = true,
+          bool reuse_dirsize = true>
 void bench_linearhashtable(thrust::device_vector<key_slice_type>& d_keys,
                            thrust::device_vector<size_type>& d_lengths,
                            thrust::device_vector<value_type>& d_values,
@@ -73,7 +74,7 @@ void bench_linearhashtable(thrust::device_vector<key_slice_type>& d_keys,
     }
     gpu_timer insert_timer;
     insert_timer.start_timer();
-    table.template insert<use_hash_tag, tag_use_same_hash>(
+    table.template insert<use_hash_tag, tag_use_same_hash, reuse_dirsize>(
       d_keys.data().get(), max_key_length, d_lengths.data().get(), d_values.data().get(), num_keys);
     insert_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
@@ -82,7 +83,7 @@ void bench_linearhashtable(thrust::device_vector<key_slice_type>& d_keys,
 
     gpu_timer find_timer;
     find_timer.start_timer();
-    table.template find<find_concurrent, use_hash_tag, tag_use_same_hash>(
+    table.template find<find_concurrent, use_hash_tag, tag_use_same_hash, reuse_dirsize>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys);
     find_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
@@ -94,7 +95,8 @@ void bench_linearhashtable(thrust::device_vector<key_slice_type>& d_keys,
     erase_timer.start_timer();
     table.template erase<use_hash_tag, tag_use_same_hash,
                          erase_merge_buckets,
-                         erase_merge_chains || erase_merge_buckets>(
+                         erase_merge_chains || erase_merge_buckets,
+                         reuse_dirsize>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), num_erase);
     erase_timer.stop_timer();
     cuda_try(cudaDeviceSynchronize());
