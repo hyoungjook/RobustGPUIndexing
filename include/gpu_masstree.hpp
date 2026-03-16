@@ -1298,8 +1298,11 @@ struct gpu_masstree {
     }
     template <typename tile_type>
     DEVICE_QUALIFIER void fini(const tile_type& tile) {
+      uint64_t total_bytes_used = (num_nodes_ + num_suffix_nodes_) * (2 * branching_factor * sizeof(elem_type));
+      float bytes_per_entry = static_cast<float>(total_bytes_used) / num_entries_;
       if (tile.thread_rank() == 0) {
         printf("%lu entries, %lu nodes (+%lu suffix nodes) found\n", num_entries_, num_nodes_, num_suffix_nodes_);
+        printf("Total Space Consumption: %lu B (%f B/entry)\n", total_bytes_used, bytes_per_entry);
       }
     }
     uint64_t num_entries_ = 0, num_nodes_ = 0, num_suffix_nodes_ = 0;

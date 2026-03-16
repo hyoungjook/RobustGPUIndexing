@@ -55,7 +55,6 @@ struct gpu_linearhashtable {
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
   static constexpr size_type invalid_pointer = std::numeric_limits<size_type>::max();
   static constexpr size_type max_directory_size = 128 * 1024 * 1024; // 0.5GB
-  static constexpr float load_factor_threshold = 1.0f;
   static constexpr size_type check_load_factor_every = 128;
 
   using host_allocator_type = Allocator;
@@ -72,11 +71,13 @@ struct gpu_linearhashtable {
   gpu_linearhashtable(const host_allocator_type& host_allocator,
                       const host_reclaimer_type& host_reclaimer,
                       size_type initial_directory_size,
-                      float resize_policy)
+                      float resize_policy,
+                      float load_factor_threshold)
       : allocator_(host_allocator.get_device_instance())
       , reclaimer_(host_reclaimer.get_device_instance())
       , initial_directory_size_(initial_directory_size)
-      , resize_policy_(resize_policy) {
+      , resize_policy_(resize_policy)
+      , load_factor_threshold_(load_factor_threshold) {
     if ((resize_policy >= 0 && (resize_policy > 2.0f || resize_policy <= 1.0f)) ||
         (resize_policy < 0 && (static_cast<size_type>(-resize_policy) % cg_tile_size != 0))) {
       fprintf(stderr, "Invalid resize_policy %f for GPULinearHT: "
@@ -94,6 +95,7 @@ struct gpu_linearhashtable {
       , is_owner_(false)
       , initial_directory_size_(other.initial_directory_size_)
       , resize_policy_(other.resize_policy_)
+      , load_factor_threshold_(other.load_factor_threshold_)
       , allocator_(other.allocator_)
       , reclaimer_(other.reclaimer_) {}
 
@@ -402,7 +404,7 @@ struct gpu_linearhashtable {
       // extend if load factor is too high
       if (check_load_factor) {
         auto num_entries = d_global_state_->template increment_num_entries<1>(tile);
-        if ((static_cast<float>(num_entries) / directory_size * (static_cast<float>(check_load_factor_every) / 15.0f)) > load_factor_threshold) {
+        if ((static_cast<float>(num_entries) / directory_size * (static_cast<float>(check_load_factor_every) / 15.0f)) > load_factor_threshold_) {
           if (d_global_state_->try_lock(tile)) {
             auto curr_directory_size = d_global_state_->template load_directory_size<true>();
             if (curr_directory_size == directory_size) {
@@ -932,12 +934,12 @@ struct gpu_linearhashtable {
         // pointer to already-traversed node chain; skip
         continue;
       }
-      task.exec(node, bucket_index, tile, allocator);
+      task.exec(node, bucket_index, directory_size, tile, allocator);
       while (node.has_next()) {
         auto next_index = node.get_next_index();
         node = node_type(next_index, tile, allocator);
         node.template load_from_allocator<false>();
-        task.exec(node, -1, tile, allocator);
+        task.exec(node, -1, directory_size, tile, allocator);
       }
     }
   }
@@ -952,7 +954,7 @@ struct gpu_linearhashtable {
     template <typename tile_type>
     DEVICE_QUALIFIER void init(const tile_type& tile) {}
     template <typename node_type, typename tile_type>
-    DEVICE_QUALIFIER void exec(const node_type& node, int head_index, const tile_type& tile, device_allocator_context_type& allocator) {
+    DEVICE_QUALIFIER void exec(const node_type& node, int head_index, size_type directory_size, const tile_type& tile, device_allocator_context_type& allocator) {
       if (head_index >= 0 && tile.thread_rank() == 0) printf("HEAD[%d] ", head_index);
       node.print();
     }
@@ -968,7 +970,7 @@ struct gpu_linearhashtable {
     template <typename tile_type>
     DEVICE_QUALIFIER void init(const tile_type& tile) {}
     template <typename node_type, typename tile_type>
-    DEVICE_QUALIFIER void exec(const node_type& node, int head_index, const tile_type& tile, device_allocator_context_type& allocator) {
+    DEVICE_QUALIFIER void exec(const node_type& node, int head_index, size_type directory_size, const tile_type& tile, device_allocator_context_type& allocator) {
       if (head_index >= 0) {
         // wrap up previous num_entry count and update stats
         max_entries_per_bucket_ = max(max_entries_per_bucket_, this_bucket_num_entries_);
@@ -991,6 +993,7 @@ struct gpu_linearhashtable {
       this_bucket_num_nodes_++;
       if (head_index >= 0) { num_head_nodes_++; }
       else { num_aux_nodes_++; }
+      directory_size_ = directory_size;
     }
     template <typename tile_type>
     DEVICE_QUALIFIER void fini(const tile_type& tile) {
@@ -999,13 +1002,18 @@ struct gpu_linearhashtable {
       float avg_entries_per_bucket = float(num_entries_) / num_head_nodes_;
       float avg_nodes_per_bucket = float(num_head_nodes_ + num_aux_nodes_) / num_head_nodes_;
       float fill_factor = float(num_entries_) / (float(num_head_nodes_ + num_aux_nodes_) * 15.0f);
+      uint64_t total_bytes_used = (num_head_nodes_ + num_aux_nodes_ + num_suffix_nodes_) * bucket_bytes +
+                                  (static_cast<uint64_t>(directory_size_) * sizeof(size_type));
+      float bytes_per_entry = static_cast<float>(total_bytes_used) / num_entries_;
       if (tile.thread_rank() == 0) {
-        printf("%lu entries (per-bucket max %lu, avg %f), %lu heads + %lu aux nodes (+%lu suffix nodes) (per-bucket max %lu, avg %f); fillfactor %f\n",
-          num_entries_, max_entries_per_bucket_, avg_entries_per_bucket,
+        printf("%lu entries (per-bucket max %lu, avg %f), %u directory, %lu heads + %lu aux nodes (+%lu suffix nodes) (per-bucket max %lu, avg %f); fillfactor %f\n",
+          num_entries_, max_entries_per_bucket_, avg_entries_per_bucket, directory_size_,
           num_head_nodes_, num_aux_nodes_, num_suffix_nodes_, max_nodes_per_bucket_, avg_nodes_per_bucket,
           fill_factor);
+        printf("Total Space Consumption: %lu B (%f B/entry)\n", total_bytes_used, bytes_per_entry);
       }
     }
+    uint32_t directory_size_ = 0;
     uint64_t num_head_nodes_ = 0, num_aux_nodes_ = 0, num_suffix_nodes_ = 0;
     uint64_t this_bucket_num_entries_ = 0, max_entries_per_bucket_ = 0, num_entries_ = 0;
     uint64_t this_bucket_num_nodes_ = 0, max_nodes_per_bucket_ = 0;
@@ -1059,6 +1067,7 @@ struct gpu_linearhashtable {
   bool is_owner_;
   size_type initial_directory_size_;
   float resize_policy_;
+  float load_factor_threshold_;
   device_allocator_instance_type allocator_;
   device_reclaimer_instance_type reclaimer_;
 

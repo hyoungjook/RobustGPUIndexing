@@ -625,12 +625,15 @@ struct gpu_cuckoohashtable {
     }
     template <typename tile_type>
     DEVICE_QUALIFIER void fini(const tile_type& tile) {
+      uint64_t total_bytes_used = (num_buckets_ + num_suffix_nodes_) * bucket_bytes;
+      float bytes_per_entry = static_cast<float>(total_bytes_used) / num_entries_;
       if (tile.thread_rank() == 0) {
         printf("%lu entries (", num_entries_);
         for (int i = 0; i < num_hfs; i++) {
           printf("%lu ", entries_per_table_[i]);
         }
         printf("), %lu buckets (+%lu suffix nodes)\n", num_buckets_, num_suffix_nodes_);
+        printf("Total Space Consumption: %lu B (%f B/entry)\n", total_bytes_used, bytes_per_entry);
       }
     }
     uint64_t num_buckets_ = 0, num_suffix_nodes_ = 0;

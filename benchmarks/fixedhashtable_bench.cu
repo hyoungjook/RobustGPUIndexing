@@ -49,7 +49,7 @@ void bench_hashtable(thrust::device_vector<key_slice_type>& d_keys,
                      uint32_t num_keys,
                      uint32_t max_key_length,
                      std::size_t num_experiments,
-                     bool erase_ratio,
+                     float erase_ratio,
                      float fill_factor,
                      bool validate_result = false,
                      bool validate_index = false,
@@ -86,6 +86,10 @@ void bench_hashtable(thrust::device_vector<key_slice_type>& d_keys,
     float find_elapsed = find_timer.get_elapsed_s();
     average_find_seconds += find_elapsed;
 
+    if (validate_index && exp == 0) {
+      table.validate();
+    }
+
     gpu_timer erase_timer;
     uint32_t num_erase = (uint32_t)(((float)num_keys) * erase_ratio);
     erase_timer.start_timer();
@@ -113,9 +117,6 @@ void bench_hashtable(thrust::device_vector<key_slice_type>& d_keys,
         std::cout << "validation failed: " << matching_count << "/" << num_keys << " matches" << std::endl;
       }
     }
-    if (validate_index) {
-      table.validate();
-    }
   }
 
   average_insert_seconds /= float(num_experiments);
@@ -141,8 +142,8 @@ int main(int argc, char** argv) {
   auto arguments    = std::vector<std::string>(argv, argv + argc);
   uint32_t num_keys = get_arg_value<uint32_t>(arguments, "num-keys").value_or(1'000'000);
   int device_id     = get_arg_value<int>(arguments, "device").value_or(0);
-  float chain_fill_factor = get_arg_value<float>(arguments, "chain-fill-factor").value_or(1.0f);
-  float cuckoo_fill_factor = get_arg_value<float>(arguments, "cuckoo-fill-factor").value_or(0.9f);
+  float chain_array_factor = get_arg_value<float>(arguments, "chain-array-factor").value_or(2.0f);
+  float cuckoo_fill_factor = get_arg_value<float>(arguments, "cuckoo-fill-factor").value_or(0.8f);
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
@@ -253,11 +254,12 @@ int main(int argc, char** argv) {
 
   std::cout << "Benchmarking...\n";
   std::cout << "num_keys = " << num_keys << ", ";
-  std::cout << "chain_fill_factor = " << chain_fill_factor << ", ";
+  std::cout << "chain_array_factor = " << chain_array_factor << ", ";
   std::cout << "cuckoo_fill_factor = " << cuckoo_fill_factor << ", ";
   std::cout << "min_key_length = " << min_key_length << ", ";
   std::cout << "max_key_length = " << max_key_length << ", ";
-  std::cout << "common_prefix_ratio = " << common_prefix_ratio << std::endl;
+  std::cout << "common_prefix_ratio = " << common_prefix_ratio << ", ";
+  std::cout << "erase-ratio = " << erase_ratio << std::endl;
   using simple_slab_alloc_type = simple_slab_allocator<128>;
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
   using chainhashtable_type = GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type>;
@@ -266,13 +268,13 @@ int main(int argc, char** argv) {
   std::cout << "Benchmarking chainhashtable_type weak-reads" << std::endl;
   bench_hashtable<chainhashtable_type, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, num_experiments, erase_ratio, chain_fill_factor,
+    num_keys, max_key_length, num_experiments, erase_ratio, chain_array_factor,
     validate_result, validate_index, verbose
   );
   std::cout << "Benchmarking chainhashtable_type atomic-reads" << std::endl;
   bench_hashtable<chainhashtable_type, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, num_experiments, erase_ratio, chain_fill_factor,
+    num_keys, max_key_length, num_experiments, erase_ratio, chain_array_factor,
     validate_result, validate_index, verbose
   );
   std::cout << "Benchmarking cuckoohashtable_type weak-reads" << std::endl;

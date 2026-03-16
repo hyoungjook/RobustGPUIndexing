@@ -102,8 +102,8 @@ int main(int argc, char** argv) {
   auto arguments    = std::vector<std::string>(argv, argv + argc);
   uint32_t num_keys = get_arg_value<uint32_t>(arguments, "num-keys").value_or(1'000'000);
   int device_id     = get_arg_value<int>(arguments, "device").value_or(0);
-  float chain_fill_factor = get_arg_value<float>(arguments, "chain-fill-factor").value_or(1.0f);
-  float cuckoo_fill_factor = get_arg_value<float>(arguments, "cuckoo-fill-factor").value_or(0.9f);
+  float chain_array_factor = get_arg_value<float>(arguments, "chain-array-factor").value_or(2.0f);
+  float cuckoo_fill_factor = get_arg_value<float>(arguments, "cuckoo-fill-factor").value_or(0.8f);
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
@@ -277,7 +277,7 @@ int main(int argc, char** argv) {
 
   std::cout << "Benchmarking...\n";
   std::cout << "num_keys = " << num_keys << ", ";
-  std::cout << "chain_fill_factor = " << chain_fill_factor << ", ";
+  std::cout << "chain_array_factor = " << chain_array_factor << ", ";
   std::cout << "cuckoo_fill_factor = " << cuckoo_fill_factor << ", ";
   std::cout << "min_key_length = " << min_key_length << ", ";
   std::cout << "max_key_length = " << max_key_length << ", ";
@@ -295,7 +295,7 @@ int main(int argc, char** argv) {
   mix_bench_hashtable<chainhashtable_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
-    max_key_length, total_num_inserts, chain_fill_factor, num_experiments, verbose
+    max_key_length, total_num_inserts, chain_array_factor, num_experiments, verbose
   );
   std::cout << "Benchmarking cuckoohashtable_type" << std::endl;
   mix_bench_hashtable<cuckoohashtable_type>(

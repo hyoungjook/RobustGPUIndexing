@@ -52,9 +52,10 @@ void bench_linearhashtable(thrust::device_vector<key_slice_type>& d_keys,
                            uint32_t num_keys,
                            uint32_t max_key_length,
                            std::size_t num_experiments,
-                           bool erase_ratio,
+                           float erase_ratio,
                            uint32_t initial_directory_size,
                            float resize_policy,
+                           float load_factor_threshold,
                            bool validate_result = false,
                            bool validate_index = false,
                            bool verbose = false) {
@@ -66,7 +67,7 @@ void bench_linearhashtable(thrust::device_vector<key_slice_type>& d_keys,
   for (std::size_t exp = 0; exp < num_experiments; exp++) {
     typename linearhashtable_type::host_allocator_type host_alloc;
     typename linearhashtable_type::host_reclaimer_type host_reclaim;
-    linearhashtable_type table(host_alloc, host_reclaim, initial_directory_size, resize_policy);
+    linearhashtable_type table(host_alloc, host_reclaim, initial_directory_size, resize_policy, load_factor_threshold);
     if (verbose) {
       auto memory_usage = utils::compute_device_memory_usage();
       std::cout << "Using: " << double(memory_usage.used_bytes) / double(1 << 30) << " GiBs"
@@ -89,6 +90,10 @@ void bench_linearhashtable(thrust::device_vector<key_slice_type>& d_keys,
     cuda_try(cudaDeviceSynchronize());
     float find_elapsed = find_timer.get_elapsed_s();
     average_find_seconds += find_elapsed;
+
+    if (validate_index && exp == 0) {
+      table.validate();
+    }
 
     gpu_timer erase_timer;
     uint32_t num_erase = (uint32_t)(((float)num_keys) * erase_ratio);
@@ -120,9 +125,6 @@ void bench_linearhashtable(thrust::device_vector<key_slice_type>& d_keys,
         std::cout << "validation failed: " << matching_count << "/" << num_keys << " matches" << std::endl;
       }
     }
-    if (validate_index) {
-      table.validate();
-    }
   }
 
   average_insert_seconds /= float(num_experiments);
@@ -150,6 +152,7 @@ int main(int argc, char** argv) {
   int device_id     = get_arg_value<int>(arguments, "device").value_or(0);
   uint32_t initial_directory_size = get_arg_value<uint32_t>(arguments, "initial-directory-size").value_or(1024u);
   float resize_policy = get_arg_value<float>(arguments, "resize-policy").value_or(2.0f);
+  float load_factor_threshold = get_arg_value<float>(arguments, "load-factor-threshold").value_or(2.5f);
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
@@ -260,9 +263,13 @@ int main(int argc, char** argv) {
 
   std::cout << "Benchmarking...\n";
   std::cout << "num_keys = " << num_keys << ", ";
+  std::cout << "initial_directory_size = " << initial_directory_size << ", ";
+  std::cout << "resize_policy = " << resize_policy << ", ";
+  std::cout << "load_factor_threshold = " << load_factor_threshold << ", ";
   std::cout << "min_key_length = " << min_key_length << ", ";
   std::cout << "max_key_length = " << max_key_length << ", ";
-  std::cout << "common_prefix_ratio = " << common_prefix_ratio << std::endl;
+  std::cout << "common_prefix_ratio = " << common_prefix_ratio << ", ";
+  std::cout << "erase-ratio = " << erase_ratio << std::endl;
   using simple_slab_linear_alloc_type = simple_slab_linear_allocator<128>;
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
   using linearhashtable_type = GpuLinearHashtable::gpu_linearhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type>;
@@ -270,13 +277,13 @@ int main(int argc, char** argv) {
   std::cout << "Benchmarking linearhashtable_type weak-reads" << std::endl;
   bench_linearhashtable<linearhashtable_type, false>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, num_experiments, erase_ratio, initial_directory_size, resize_policy,
+    num_keys, max_key_length, num_experiments, erase_ratio, initial_directory_size, resize_policy, load_factor_threshold,
     validate_result, validate_index, verbose
   );
   std::cout << "Benchmarking linearhashtable_type atomic-reads" << std::endl;
   bench_linearhashtable<linearhashtable_type, true>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
-    num_keys, max_key_length, num_experiments, erase_ratio, initial_directory_size, resize_policy,
+    num_keys, max_key_length, num_experiments, erase_ratio, initial_directory_size, resize_policy, load_factor_threshold,
     validate_result, validate_index, verbose
   );
   

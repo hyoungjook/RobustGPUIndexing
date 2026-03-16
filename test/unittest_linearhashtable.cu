@@ -24,6 +24,7 @@
 std::size_t num_keys;
 uint32_t initial_directory_size;
 float resize_policy;
+float load_factor_threshold;
 
 namespace {
 using key_slice_type   = uint32_t;
@@ -44,7 +45,7 @@ class MapTest : public testing::Test {
   MapTest() {
     host_allocator_ = new typename map_data::host_allocator();
     host_reclaimer_ = new typename map_data::host_reclaimer();
-    map_ = new typename map_data::map(*host_allocator_, *host_reclaimer_, initial_directory_size, resize_policy);
+    map_ = new typename map_data::map(*host_allocator_, *host_reclaimer_, initial_directory_size, resize_policy, load_factor_threshold);
   }
   ~MapTest() override {
     //host_allocator_->print_stats();
@@ -520,7 +521,8 @@ int main(int argc, char** argv) {
   num_keys       = get_arg_value<uint32_t>(arguments, "num-keys").value_or(1024);
   initial_directory_size = get_arg_value<uint32_t>(arguments, "initial-directory-size").value_or(1024u);
   resize_policy = get_arg_value<float>(arguments, "resize-policy").value_or(2.0f);
-  std::cout << "Testing using " << num_keys << " keys, initial-directory-size " << initial_directory_size << ", resize-policy " << resize_policy << "\n";
+  load_factor_threshold = get_arg_value<float>(arguments, "load-factor-threshold").value_or(4.0f);
+  std::cout << "Testing using " << num_keys << " keys, initial-directory-size " << initial_directory_size << ", resize-policy " << resize_policy << ", load-factor-threshold " << load_factor_threshold << "\n";
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

@@ -54,6 +54,7 @@ void mix_bench_linearhashtable(thrust::device_vector<key_slice_type>& d_insert_k
                                uint32_t max_key_length,
                                uint32_t initial_directory_size,
                                float resize_policy,
+                               float load_factor_threshold,
                                std::size_t num_experiments,
                                bool verbose = false) {
   float average_insert_seconds = 0.f;
@@ -62,7 +63,7 @@ void mix_bench_linearhashtable(thrust::device_vector<key_slice_type>& d_insert_k
   for (std::size_t exp = 0; exp < num_experiments; exp++) {
     typename hashtable_type::host_allocator_type host_alloc;
     typename hashtable_type::host_reclaimer_type host_reclaim;
-    hashtable_type tree(host_alloc, host_reclaim, initial_directory_size, resize_policy);
+    hashtable_type tree(host_alloc, host_reclaim, initial_directory_size, resize_policy, load_factor_threshold);
     if (verbose) {
       auto memory_usage = utils::compute_device_memory_usage();
       std::cout << "Using: " << double(memory_usage.used_bytes) / double(1 << 30) << " GiBs"
@@ -110,6 +111,7 @@ int main(int argc, char** argv) {
   int device_id     = get_arg_value<int>(arguments, "device").value_or(0);
   uint32_t initial_directory_size = get_arg_value<uint32_t>(arguments, "initial-directory-size").value_or(1024u);
   float resize_policy = get_arg_value<float>(arguments, "resize-policy").value_or(2.0f);
+  float load_factor_threshold = get_arg_value<float>(arguments, "load-factor-threshold").value_or(2.5f);
   uint32_t min_key_length = get_arg_value<uint32_t>(arguments, "min-key-length").value_or(1u);
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
@@ -296,7 +298,7 @@ int main(int argc, char** argv) {
   mix_bench_linearhashtable<linearhashtable_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
-    max_key_length, initial_directory_size, resize_policy, num_experiments, verbose
+    max_key_length, initial_directory_size, resize_policy, load_factor_threshold, num_experiments, verbose
   );
   
 }

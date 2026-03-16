@@ -101,6 +101,10 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
     auto successor_elapsed = successor_timer.get_elapsed_s();
     average_successor_seconds += successor_elapsed;
 
+    if (validate_index && exp == 0) {
+      tree.validate();
+    }
+
     gpu_timer erase_timer;
     uint32_t num_erase = (uint32_t)(((float)num_keys) * erase_ratio);
     erase_timer.start_timer();
@@ -131,9 +135,6 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
       else {
         std::cout << "validation failed: " << matching_count << "/" << num_keys << " matches" << std::endl;
       }
-    }
-    if (validate_index) {
-      tree.validate();
     }
   }
 
@@ -275,7 +276,8 @@ int main(int argc, char** argv) {
   std::cout << "num_keys = " << num_keys << ", ";
   std::cout << "min_key_length = " << min_key_length << ", ";
   std::cout << "max_key_length = " << max_key_length << ", ";
-  std::cout << "common_prefix_ratio = " << common_prefix_ratio << std::endl;
+  std::cout << "common_prefix_ratio = " << common_prefix_ratio << ", ";
+  std::cout << "erase-ratio = " << erase_ratio << std::endl;
   using simple_slab_alloc_type = simple_slab_allocator<128>;
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
   using masstree_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type>;

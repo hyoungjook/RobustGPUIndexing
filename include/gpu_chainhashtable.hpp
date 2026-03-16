@@ -579,11 +579,14 @@ struct gpu_chainhashtable {
       float avg_entries_per_bucket = float(num_entries_) / num_head_nodes_;
       float avg_nodes_per_bucket = float(num_head_nodes_ + num_aux_nodes_) / num_head_nodes_;
       float fill_factor = float(num_entries_) / (float(num_head_nodes_ + num_aux_nodes_) * 15.0f);
+      uint64_t total_bytes_used = (num_head_nodes_ + num_aux_nodes_ + num_suffix_nodes_) * bucket_bytes;
+      float bytes_per_entry = static_cast<float>(total_bytes_used) / num_entries_;
       if (tile.thread_rank() == 0) {
         printf("%lu entries (per-bucket max %lu, avg %f), %lu heads + %lu aux nodes (+%lu suffix nodes) (per-bucket max %lu, avg %f); fillfactor %f\n",
           num_entries_, max_entries_per_bucket_, avg_entries_per_bucket,
           num_head_nodes_, num_aux_nodes_, num_suffix_nodes_, max_nodes_per_bucket_, avg_nodes_per_bucket,
           fill_factor);
+        printf("Total Space Consumption: %lu B (%f B/entry)\n", total_bytes_used, bytes_per_entry);
       }
     }
     uint64_t num_head_nodes_ = 0, num_aux_nodes_ = 0, num_suffix_nodes_ = 0;
