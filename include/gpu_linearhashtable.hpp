@@ -175,7 +175,7 @@ struct gpu_linearhashtable {
   }
 
   template <bool concurrent, bool use_hash_tag, bool tag_use_same_hash, typename tile_type>
-  DEVICE_QUALIFIER value_type cooperative_find_from_dirsize(size_type directory_size,
+  DEVICE_QUALIFIER value_type cooperative_find_from_dirsize(size_type& directory_size,
                                                             const key_slice_type* key,
                                                             size_type key_length,
                                                             const tile_type& tile,
@@ -224,7 +224,7 @@ struct gpu_linearhashtable {
   }
 
   template <bool use_hash_tag, bool tag_use_same_hash, typename tile_type>
-  DEVICE_QUALIFIER bool cooperative_insert_from_dirsize(size_type directory_size,
+  DEVICE_QUALIFIER bool cooperative_insert_from_dirsize(size_type& directory_size,
                                                         const key_slice_type* key,
                                                         const size_type key_length,
                                                         const value_type& value,
@@ -446,7 +446,7 @@ struct gpu_linearhashtable {
   }
 
   template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, bool do_merge_buckets, typename tile_type>
-  DEVICE_QUALIFIER bool cooperative_erase_from_dirsize(size_type directory_size,
+  DEVICE_QUALIFIER bool cooperative_erase_from_dirsize(size_type& directory_size,
                                                        const key_slice_type* key,
                                                        const size_type key_length,
                                                        const tile_type& tile,
