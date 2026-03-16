@@ -587,7 +587,7 @@ __global__ void initialize_kernel(linearhashtable table) {
   table.initialize_bucket(bucket_index, tile, allocator);
 }
 
-template <bool use_hash_tag, bool tag_use_same_hash, typename key_slice_type, typename size_type, typename value_type>
+template <bool use_hash_tag, bool tag_use_same_hash, bool reuse_dirsize, typename key_slice_type, typename size_type, typename value_type>
 struct insert_device_func {
   static constexpr bool reclaim_required = true;
   // kernel args
@@ -601,6 +601,7 @@ struct insert_device_func {
     const key_slice_type* key;
     size_type key_length;
     value_type value;
+    size_type directory_size;
   };
   // device-side functions
   template <typename hashtable, typename tile_type, typename allocator_type>
@@ -610,18 +611,26 @@ struct insert_device_func {
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
       regs.value = d_values[thread_id];
     }
+    if constexpr (reuse_dirsize) {
+      regs.directory_size = table.template cooperative_fetch_dirsize<true>();
+    }
   }
   template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     auto cur_value = tile.shfl(regs.value, cur_rank);
-    table.template cooperative_insert<use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+    if constexpr (reuse_dirsize) {
+      table.template cooperative_insert_from_dirsize<use_hash_tag, tag_use_same_hash>(regs.directory_size, cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+    }
+    else {
+      table.template cooperative_insert<use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, update_if_exists);
+    }
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
 
-template <bool concurrent, bool use_hash_tag, bool tag_use_same_hash, typename key_slice_type, typename size_type, typename value_type>
+template <bool concurrent, bool use_hash_tag, bool tag_use_same_hash, bool reuse_dirsize, typename key_slice_type, typename size_type, typename value_type>
 struct find_device_func {
   static constexpr bool reclaim_required = false;
   // kernel args
@@ -634,6 +643,7 @@ struct find_device_func {
     const key_slice_type* key;
     size_type key_length;
     value_type value;
+    size_type directory_size;
   };
   // device-side functions
   template <typename hashtable, typename tile_type, typename allocator_type>
@@ -642,12 +652,17 @@ struct find_device_func {
       regs.key = &d_keys[max_key_length * thread_id];
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
+    if constexpr (reuse_dirsize) {
+      regs.directory_size = table.template cooperative_fetch_dirsize<concurrent>();
+    }
   }
   template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    auto cur_value = table.template cooperative_find<concurrent, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, tile, allocator);
+    auto cur_value = reuse_dirsize ?
+      table.template cooperative_find_from_dirsize<concurrent, use_hash_tag, tag_use_same_hash>(regs.directory_size, cur_key, cur_key_length, tile, allocator) :
+      table.template cooperative_find<concurrent, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, tile, allocator);
     if (tile.thread_rank() == cur_rank) {
       regs.value = cur_value;
     }
@@ -657,7 +672,7 @@ struct find_device_func {
   }
 };
 
-template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, bool do_merge_buckets, typename key_slice_type, typename size_type, typename value_type>
+template <bool use_hash_tag, bool tag_use_same_hash, bool do_merge_chains, bool do_merge_buckets, bool reuse_dirsize, typename key_slice_type, typename size_type, typename value_type>
 struct erase_device_func {
   static constexpr bool reclaim_required = true;
   // kernel args
@@ -668,6 +683,7 @@ struct erase_device_func {
   struct dev_regs {
     const key_slice_type* key;
     size_type key_length;
+    size_type directory_size;
   };
   // device-side functions
   template <typename hashtable, typename tile_type, typename allocator_type>
@@ -676,12 +692,20 @@ struct erase_device_func {
       regs.key = &d_keys[max_key_length * thread_id];
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
     }
+    if constexpr (reuse_dirsize) {
+      regs.directory_size = table.template cooperative_fetch_dirsize<true>();
+    }
   }
   template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
     auto cur_key = tile.shfl(regs.key, cur_rank);
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
-    table.template cooperative_erase<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(cur_key, cur_key_length, tile, allocator, reclaimer);
+    if constexpr (reuse_dirsize) {
+      table.template cooperative_erase_from_dirsize<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(regs.directory_size, cur_key, cur_key_length, tile, allocator, reclaimer);
+    }
+    else {
+      table.template cooperative_erase<use_hash_tag, tag_use_same_hash, do_merge_chains, do_merge_buckets>(cur_key, cur_key_length, tile, allocator, reclaimer);
+    }
   }
   DEVICE_QUALIFIER void store(dev_regs& regs, uint32_t thread_id) const noexcept {}
 };
@@ -690,6 +714,7 @@ template <bool use_hash_tag,
           bool tag_use_same_hash,
           bool erase_do_merge_chains,
           bool erase_do_merge_buckets,
+          bool reuse_dirsize,
           typename key_slice_type,
           typename size_type,
           typename value_type>
@@ -710,6 +735,7 @@ struct mixed_device_func {
     size_type key_length;
     value_type value;
     bool result;
+    size_type directory_size;
   };
   // device-side functions
   template <typename hashtable, typename tile_type, typename allocator_type>
@@ -720,6 +746,9 @@ struct mixed_device_func {
       regs.key_length = d_key_lengths ? d_key_lengths[thread_id] : max_key_length;
       regs.value = d_values[thread_id];
     }
+    if constexpr (reuse_dirsize) {
+      regs.directory_size = table.template cooperative_fetch_dirsize<true>();
+    }
   }
   template <typename hashtable, typename tile_type, typename allocator_type, typename reclaimer_type>
   DEVICE_QUALIFIER void exec(hashtable& table, dev_regs& regs, tile_type& tile, allocator_type& allocator, reclaimer_type& reclaimer, int cur_rank) const {
@@ -728,15 +757,21 @@ struct mixed_device_func {
     auto cur_key_length = tile.shfl(regs.key_length, cur_rank);
     if (cur_type == request_type_insert) {
       auto cur_value = tile.shfl(regs.value, cur_rank);
-      auto cur_result = table.template cooperative_insert<use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists);
+      auto cur_result = reuse_dirsize ?
+        table.template cooperative_insert_from_dirsize<use_hash_tag, tag_use_same_hash>(regs.directory_size, cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists) :
+        table.template cooperative_insert<use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, cur_value, tile, allocator, reclaimer, insert_update_if_exists);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else if (cur_type == request_type_find) {
-      auto cur_value = table.template cooperative_find<true, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, tile, allocator);
+      auto cur_value = reuse_dirsize ?
+        table.template cooperative_find_from_dirsize<true, use_hash_tag, tag_use_same_hash>(regs.directory_size, cur_key, cur_key_length, tile, allocator) :
+        table.template cooperative_find<true, use_hash_tag, tag_use_same_hash>(cur_key, cur_key_length, tile, allocator);
       if (tile.thread_rank() == cur_rank) { regs.value = cur_value; }
     }
     else if (cur_type == request_type_erase) {
-      auto cur_result = table.template cooperative_erase<use_hash_tag, tag_use_same_hash, erase_do_merge_chains, erase_do_merge_buckets>(cur_key, cur_key_length, tile, allocator, reclaimer);
+      auto cur_result = reuse_dirsize ?
+        table.template cooperative_erase_from_dirsize<use_hash_tag, tag_use_same_hash, erase_do_merge_chains, erase_do_merge_buckets>(regs.directory_size, cur_key, cur_key_length, tile, allocator, reclaimer) :
+        table.template cooperative_erase<use_hash_tag, tag_use_same_hash, erase_do_merge_chains, erase_do_merge_buckets>(cur_key, cur_key_length, tile, allocator, reclaimer);
       if (tile.thread_rank() == cur_rank) { regs.result = cur_result; }
     }
     else {  // request_type_successor
