@@ -117,7 +117,7 @@ struct insert_device_func {
     const key_slice_type* key;
     size_type key_length;
     value_type value;
-    key_slice_type root_lane_elem;
+    uint64_t root_lane_elem;
   };
   // device-side functions
   template <typename masstree, typename tile_type, typename allocator_type>
@@ -159,7 +159,7 @@ struct find_device_func {
     const key_slice_type* key;
     size_type key_length;
     value_type value;
-    key_slice_type root_lane_elem;
+    uint64_t root_lane_elem;
   };
   // device-side functions
   template <typename masstree, typename tile_type, typename allocator_type>
@@ -199,7 +199,7 @@ struct erase_device_func {
   struct dev_regs {
     const key_slice_type* key;
     size_type key_length;
-    key_slice_type root_lane_elem;
+    uint64_t root_lane_elem;
   };
   // device-side functions
   template <typename masstree, typename tile_type, typename allocator_type>
@@ -250,7 +250,7 @@ struct scan_device_func {
     value_type* value;
     key_slice_type* out_key;
     size_type* out_key_length;
-    key_slice_type root_lane_elem;
+    uint64_t root_lane_elem;
   };
   // device-side functions
   template <typename masstree, typename tile_type, typename allocator_type>
@@ -318,7 +318,7 @@ struct mixed_device_func {
     size_type key_length;
     value_type value;
     bool result;
-    key_slice_type root_lane_elem;
+    uint64_t root_lane_elem;
   };
   // device-side functions
   template <typename masstree, typename tile_type, typename allocator_type>
@@ -375,7 +375,7 @@ template <typename masstree, typename func>
 __global__ void traverse_tree_nodes_kernel(masstree tree, func task) {
   // called with single warp; not parallelized for debug purpose
   assert(gridDim.x == 1 && gridDim.y == 1 && gridDim.z == 1);
-  assert(blockDim.x == 32 && blockDim.y == 1 && blockDim.z == 1);
+  assert(blockDim.x == masstree::cg_tile_size && blockDim.y == 1 && blockDim.z == 1);
   auto block = cg::this_thread_block();
   auto tile  = cg::tiled_partition<masstree::cg_tile_size>(block);
   task.init(tile);

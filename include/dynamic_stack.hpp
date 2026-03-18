@@ -26,14 +26,14 @@ namespace utils {
 
 /*
  *    Device-side dynamic stack using the device allocator
- *  The first 31 elements are stored in the register.
+ *  The first (tile_size - 1) elements are stored in the register.
  *  After then, the values are spilled to memory using the
  *  allocator.
  */
 template <int N, typename tile_type, typename DeviceAllocator>
 struct dynamic_stack_u32 {
   using element_type = uint32_t;
-  static constexpr uint32_t elems_per_node_ = 32;
+  static constexpr uint32_t elems_per_node_ = tile_type::size();
   static constexpr uint32_t node_capacity_ = elems_per_node_ - 1;
 
   DEVICE_QUALIFIER dynamic_stack_u32(DeviceAllocator& allocator, const tile_type& tile)

@@ -117,8 +117,10 @@ struct device_allocator_context<simple_slab_linear_allocator<slab_size, max_byte
   template <typename tile_type>
   DEVICE_QUALIFIER device_allocator_context(const device_instance_type& alloc, const tile_type& tile)
       : alloc_(alloc) {
-    assert(tile.size() == tile_size_);
-    block_index_ = initialize_index(get_tile_id());
+    assert(tile.size() > 0);
+    assert(tile.size() <= tile_size_);
+    assert((tile_size_ % tile.size()) == 0);
+    block_index_ = initialize_index(get_tile_id(tile.size()));
   }
 
   template <typename tile_type>
@@ -246,8 +248,8 @@ private:
   }
 
   static constexpr uint32_t mix_prime = 0x9e3779b1;
-  DEVICE_QUALIFIER uint32_t get_tile_id() const {
-    return (threadIdx.x + blockIdx.x * blockDim.x) / tile_size_;
+  DEVICE_QUALIFIER uint32_t get_tile_id(uint32_t runtime_tile_size) const {
+    return (threadIdx.x + blockIdx.x * blockDim.x) / runtime_tile_size;
   }
   DEVICE_QUALIFIER pointer_type initialize_index(uint32_t tile_id) const {
     size_type num_blocks = alloc_.counts_->slab_block_count_;
@@ -264,24 +266,35 @@ private:
   template <typename tile_type>
   DEVICE_QUALIFIER pointer_type try_allocate_in_block(pointer_type block_index, const tile_type& tile) {
     auto* bitmap_base = reinterpret_cast<uint8_t*>(alloc_.pool_) - total_bitmap_bytes_;
-    bitmap_type* bitmap_addr =
+    auto* block_bitmap =
         reinterpret_cast<bitmap_type*>(
-          reinterpret_cast<block_bitmap_type*>(bitmap_base) + block_index) + tile.thread_rank();
-    bitmap_type bitmap = *bitmap_addr;
+          reinterpret_cast<block_bitmap_type*>(bitmap_base) + block_index);
     pointer_type result = invalid_pointer;
     while (result == invalid_pointer) {
-      auto empty_lane = __ffs(~bitmap) - 1;
-      auto free_lane = tile.ballot(empty_lane >= 0);
+      int logical_word = -1;
+      int empty_bit = -1;
+      for (uint32_t word = tile.thread_rank(); word < tile_size_; word += tile.size()) {
+        bitmap_type bitmap = block_bitmap[word];
+        auto candidate_bit = __ffs(~bitmap) - 1;
+        if (candidate_bit >= 0) {
+          logical_word = static_cast<int>(word);
+          empty_bit = candidate_bit;
+          break;
+        }
+      }
+      auto free_lane = tile.ballot(logical_word >= 0);
       if (free_lane != 0) {
         uint32_t src_lane = __ffs(free_lane) - 1;
+        logical_word = tile.shfl(logical_word, src_lane);
+        empty_bit = tile.shfl(empty_bit, src_lane);
         if (src_lane == tile.thread_rank()) {
-          bitmap_type mask = static_cast<bitmap_type>(1) << empty_lane;
+          auto* bitmap_addr = block_bitmap + logical_word;
+          bitmap_type mask = static_cast<bitmap_type>(1) << empty_bit;
           cuda::atomic_ref<bitmap_type, cuda::thread_scope_device> bitmap_ref(*bitmap_addr);
-          bitmap = bitmap_ref.fetch_or(mask, cuda::memory_order_relaxed);
+          auto bitmap = bitmap_ref.fetch_or(mask, cuda::memory_order_relaxed);
           if ((bitmap & mask) == 0) {
             // atomically acquired the bit
-            result = empty_lane + src_lane * sizeof(bitmap_type) * 8;
-            bitmap |= mask;
+            result = empty_bit + logical_word * sizeof(bitmap_type) * 8;
           }
         }
         result = tile.shfl(result, src_lane);

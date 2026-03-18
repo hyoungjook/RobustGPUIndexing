@@ -28,7 +28,9 @@
 #include <ios>
 #include <iostream>
 #include <masstree_node.hpp>
+#include <masstree_node_subwarp.hpp>
 #include <suffix.hpp>
+#include <suffix_subwarp.hpp>
 #include <queue>
 #include <sstream>
 #include <type_traits>
@@ -41,15 +43,42 @@
 
 namespace GpuMasstree {
 
+struct masstree_layout_warp {
+  static constexpr uint32_t cg_tile_size = 32;
+  static constexpr uint32_t node_width = 16;
+  using node_lane_type = uint32_t;
+
+  template <typename tile_type, typename allocator_type>
+  using node_type = masstree_node<tile_type, allocator_type>;
+
+  template <typename tile_type, typename allocator_type>
+  using suffix_type = suffix_node<tile_type, allocator_type>;
+};
+
+struct masstree_layout_subwarp {
+  static constexpr uint32_t cg_tile_size = 16;
+  static constexpr uint32_t node_width = 16;
+  using node_lane_type = uint64_t;
+
+  template <typename tile_type, typename allocator_type>
+  using node_type = masstree_node_subwarp<tile_type, allocator_type>;
+
+  template <typename tile_type, typename allocator_type>
+  using suffix_type = suffix_node_subwarp<tile_type, allocator_type>;
+};
+
 template <typename Allocator,
-          typename Reclaimer>
+          typename Reclaimer,
+          typename Layout = masstree_layout_warp>
 struct gpu_masstree {
   using size_type = uint32_t;
   using elem_type = uint32_t;
   using key_slice_type = elem_type;
   using value_type = elem_type;
-  static auto constexpr branching_factor = 16;
-  static auto constexpr cg_tile_size = 2 * branching_factor;
+  using layout_type = Layout;
+  using node_lane_type = typename layout_type::node_lane_type;
+  static auto constexpr branching_factor = layout_type::node_width;
+  static auto constexpr cg_tile_size = layout_type::cg_tile_size;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
@@ -60,6 +89,12 @@ struct gpu_masstree {
   using host_reclaimer_type = Reclaimer;
   using device_reclaimer_instance_type = typename host_reclaimer_type::device_instance_type;
   using device_reclaimer_context_type = device_reclaimer_context<host_reclaimer_type>;
+
+  template <typename tile_type>
+  using node_type_t = typename layout_type::template node_type<tile_type, device_allocator_context_type>;
+
+  template <typename tile_type>
+  using suffix_type_t = typename layout_type::template suffix_type<tile_type, device_allocator_context_type>;
 
   gpu_masstree() = delete;
   gpu_masstree(const host_allocator_type& host_allocator,
@@ -165,22 +200,22 @@ struct gpu_masstree {
 
   // device-side APIs
   template <bool concurrent, typename tile_type>
-  DEVICE_QUALIFIER elem_type cooperative_fetch_root(const tile_type& tile,
-                                                    device_allocator_context_type& allocator) {
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+  DEVICE_QUALIFIER node_lane_type cooperative_fetch_root(const tile_type& tile,
+                                                         device_allocator_context_type& allocator) {
+    using node_type = node_type_t<tile_type>;
     auto root_node = node_type(root_index_, tile, allocator);
     root_node.template load_fetchonly<concurrent>();
     return root_node.get_lane_elem();
   }
 
   template <bool concurrent, typename tile_type>
-  DEVICE_QUALIFIER value_type cooperative_find_from_root(elem_type root_lane_elem,
+  DEVICE_QUALIFIER value_type cooperative_find_from_root(node_lane_type root_lane_elem,
                                                          const key_slice_type* key,
                                                          size_type key_length,
                                                          const tile_type& tile,
                                                          device_allocator_context_type& allocator) {
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
-    using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
+    using node_type = node_type_t<tile_type>;
+    using suffix_type = suffix_type_t<tile_type>;
     dummy_early_exit_check<node_type> dummy_early_exit;
     size_type slice = 0;
     auto current_node = node_type(root_index_, root_lane_elem, tile, allocator);
@@ -224,7 +259,7 @@ struct gpu_masstree {
   }
 
   template <bool use_upper_key, bool concurrent, typename tile_type>
-  DEVICE_QUALIFIER size_type cooperative_scan_from_root(elem_type root_lane_elem,
+  DEVICE_QUALIFIER size_type cooperative_scan_from_root(node_lane_type root_lane_elem,
                                                         const key_slice_type* lower_key,
                                                         const size_type lower_key_length,
                                                         const tile_type& tile,
@@ -236,7 +271,7 @@ struct gpu_masstree {
                                                         key_slice_type* out_keys = nullptr,
                                                         size_type* out_key_lengths = nullptr,
                                                         const size_type out_key_max_length = 1) {
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+    using node_type = node_type_t<tile_type>;
     using dynamic_stack_type_x2 = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
     using dynamic_stack_type_x1 = utils::dynamic_stack_u32<1, tile_type, device_allocator_context_type>;
     dummy_early_exit_check<node_type> dummy_early_exit;
@@ -388,7 +423,7 @@ struct gpu_masstree {
   }
 
   template <bool enable_suffix, typename tile_type>
-  DEVICE_QUALIFIER bool cooperative_insert_from_root(elem_type root_lane_elem,
+  DEVICE_QUALIFIER bool cooperative_insert_from_root(node_lane_type root_lane_elem,
                                                      const key_slice_type* key,
                                                      const size_type key_length,
                                                      const value_type& value,
@@ -396,8 +431,8 @@ struct gpu_masstree {
                                                      device_allocator_context_type& allocator,
                                                      device_reclaimer_context_type& reclaimer,
                                                      bool update_if_exists = false) {
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
-    using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
+    using node_type = node_type_t<tile_type>;
+    using suffix_type = suffix_type_t<tile_type>;
     struct split_early_exit_check {
       DEVICE_QUALIFIER bool check(const node_type& border_node) {
         // if the border node already has the key slice and it's not the last slice,
@@ -590,7 +625,7 @@ struct gpu_masstree {
   }
 
   template <bool concurrent, bool do_merge, bool do_remove_empty_root, typename tile_type>
-  DEVICE_QUALIFIER bool cooperative_erase_from_root(elem_type root_lane_elem,
+  DEVICE_QUALIFIER bool cooperative_erase_from_root(node_lane_type root_lane_elem,
                                                     const key_slice_type* key,
                                                     const size_type key_length,
                                                     const tile_type& tile,
@@ -598,8 +633,8 @@ struct gpu_masstree {
                                                     device_reclaimer_context_type& reclaimer) {
     static_assert(concurrent || (!do_merge && !do_remove_empty_root));
     static_assert(do_merge || !do_remove_empty_root);
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
-    using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
+    using node_type = node_type_t<tile_type>;
+    using suffix_type = suffix_type_t<tile_type>;
     using dynamic_stack_type = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
     struct merge_early_exit_check {
       DEVICE_QUALIFIER bool check(const node_type& border_node) {
@@ -825,14 +860,14 @@ struct gpu_masstree {
   };
 
   template <bool concurrent, typename tile_type, typename early_exit_check>
-  DEVICE_QUALIFIER void coop_traverse_until_border(masstree_node<tile_type, device_allocator_context_type>& current_node,
+  DEVICE_QUALIFIER void coop_traverse_until_border(node_type_t<tile_type>& current_node,
                                                    const key_slice_type& key_slice,
                                                    const tile_type& tile,
                                                    device_allocator_context_type& allocator,
                                                    bool lock_border_node,
                                                    early_exit_check& early_exit) {
     // starting from a local root node in a layer, return the border node and its index
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+    using node_type = node_type_t<tile_type>;
     while (true) {
       if constexpr (concurrent) {
         traverse_side_links(current_node, key_slice, tile, allocator);
@@ -863,7 +898,7 @@ struct gpu_masstree {
   }
 
   template <typename tile_type, typename early_exit_check>
-  DEVICE_QUALIFIER void coop_traverse_until_border_split(masstree_node<tile_type, device_allocator_context_type>& current_node,
+  DEVICE_QUALIFIER void coop_traverse_until_border_split(node_type_t<tile_type>& current_node,
                                                          const key_slice_type& key_slice,
                                                          const tile_type& tile,
                                                          device_allocator_context_type& allocator,
@@ -871,7 +906,7 @@ struct gpu_masstree {
     // starting from a local root node in a layer, return the LOCKED border node and its index
     // proactively split full nodes while traversal. also the returned border node is not full.
     // if early exit condition is met, returned node is not locked by this warp (might locked by another)
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+    using node_type = node_type_t<tile_type>;
     const size_type root_index = current_node.get_node_index();
     size_type parent_index = root_index;
     while (true) {
@@ -993,7 +1028,7 @@ struct gpu_masstree {
   }
 
   template <typename tile_type, typename early_exit_check>
-  DEVICE_QUALIFIER void coop_traverse_until_border_merge(masstree_node<tile_type, device_allocator_context_type>& current_node,
+  DEVICE_QUALIFIER void coop_traverse_until_border_merge(node_type_t<tile_type>& current_node,
                                                          const key_slice_type& key_slice,
                                                          const tile_type& tile,
                                                          device_allocator_context_type& allocator,
@@ -1002,7 +1037,7 @@ struct gpu_masstree {
     // starting from a local root node in a layer, return the LOCKED border node and its index
     // proactively merge/borrow underflow nodes while traversal. also the returned border node is not underflow.
     // if early exit condition is met, returned node is not locked by this warp (might locked by another)
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+    using node_type = node_type_t<tile_type>;
     const size_type root_index = current_node.get_node_index();
     size_type parent_index = root_index;
     size_type sibling_index = root_index;
@@ -1200,7 +1235,7 @@ struct gpu_masstree {
   DEVICE_QUALIFIER void cooperative_traverse_tree_nodes(Func& task, const tile_type& tile) {
     // debug-purpose, so inefficient implementation
     // called with single warp, BFS
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+    using node_type = node_type_t<tile_type>;
     using dynamic_stack_type = utils::dynamic_stack_u32<2, tile_type, device_allocator_context_type>;
     device_allocator_context_type allocator{allocator_, tile};
     // stack: stores node indexes. metadata: # of traversed children
@@ -1239,7 +1274,7 @@ struct gpu_masstree {
 
   template <typename func>
   void traverse_tree_nodes(func task) {
-    kernels::GpuMasstree::traverse_tree_nodes_kernel<<<1, 32>>>(*this, task);
+    kernels::GpuMasstree::traverse_tree_nodes_kernel<<<1, cg_tile_size>>>(*this, task);
     cudaDeviceSynchronize();
   }
 
@@ -1263,7 +1298,7 @@ struct gpu_masstree {
     DEVICE_QUALIFIER void init(const tile_type& tile) {}
     template <typename node_type, typename tile_type>
     DEVICE_QUALIFIER void exec(const node_type& node, const tile_type& tile, device_allocator_context_type& allocator) {
-      using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
+      using suffix_type = suffix_type_t<tile_type>;
       uint32_t num_entries = 0;
       if (node.is_border()) {
         uint16_t num_keys = node.num_keys();
@@ -1354,7 +1389,7 @@ struct gpu_masstree {
   DEVICE_QUALIFIER void allocate_root_node(size_type* d_root_index, const tile_type& tile, device_allocator_context_type& allocator) {
     auto root_index = allocator.allocate(tile);
     *d_root_index = root_index;
-    using node_type = masstree_node<tile_type, device_allocator_context_type>;
+    using node_type = node_type_t<tile_type>;
     auto root_node = node_type(root_index, tile, allocator);
     root_node.initialize_root();
     root_node.template store<false>();
@@ -1390,5 +1425,8 @@ struct gpu_masstree {
                                               uint32_t num_requests);
 
 }; // struct gpu_masstree
+
+template <typename Allocator, typename Reclaimer>
+using gpu_masstree_subwarp = gpu_masstree<Allocator, Reclaimer, masstree_layout_subwarp>;
 
 } // namespace GPUMasstree
