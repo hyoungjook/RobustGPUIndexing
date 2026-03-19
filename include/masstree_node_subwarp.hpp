@@ -774,8 +774,11 @@ struct masstree_node_subwarp {
     sibling_node.make_garbage_node(true, node_index_);
     // update parent
     int right_sibling_lane_in_parent = __ffs(parent_node.match_ptr_in_node(sibling_node.node_index_)) - 1;
-    if (tile_.thread_rank() == right_sibling_lane_in_parent) {
-      parent_node.lane_elem_ = {pivot_key, new_sibling_node.node_index_};
+    if (tile_.thread_rank() == right_sibling_lane_in_parent - 1) {
+      parent_node.lane_elem_.key = pivot_key;
+    }
+    else if (tile_.thread_rank() == right_sibling_lane_in_parent) {
+      parent_node.lane_elem_.value = new_sibling_node.node_index_;
     }
     //assert(!(
     //  is_border() &&
