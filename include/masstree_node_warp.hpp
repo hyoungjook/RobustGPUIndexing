@@ -19,10 +19,10 @@
 #include <cstdint>
 #include <macros.hpp>
 #include <utils.hpp>
-#include <suffix.hpp>
+#include <suffix_node_warp.hpp>
 
 template <typename tile_type, typename allocator_type>
-struct masstree_node {
+struct masstree_node_warp {
   using elem_type = uint32_t;
   using key_type = elem_type;
   using value_type = elem_type;
@@ -32,14 +32,12 @@ struct masstree_node {
   static constexpr uint32_t KEYSTATE_VALUE = 0b00u;
   static constexpr uint32_t KEYSTATE_LINK = 0b01u;
   static constexpr uint32_t KEYSTATE_SUFFIX = 0b11u;
-  DEVICE_QUALIFIER masstree_node(const tile_type& tile, allocator_type& allocator)
+  static_assert(tile_type::size() == 2 * node_width);
+  DEVICE_QUALIFIER masstree_node_warp(const tile_type& tile, allocator_type& allocator)
       : tile_(tile), allocator_(allocator) {}
-  DEVICE_QUALIFIER masstree_node(size_type index, const tile_type& tile, allocator_type& allocator)
+  DEVICE_QUALIFIER masstree_node_warp(size_type index, const tile_type& tile, allocator_type& allocator)
       : node_index_(index), tile_(tile), allocator_(allocator) {}
-  {
-    assert(tile_.size() == 2 * node_width);
-  }
-  DEVICE_QUALIFIER masstree_node(size_type index,
+  DEVICE_QUALIFIER masstree_node_warp(size_type index,
                                  const elem_type elem,
                                  const tile_type& tile,
                                  allocator_type& allocator)
@@ -165,7 +163,7 @@ struct masstree_node {
   DEVICE_QUALIFIER bool is_underflow() const {
     return (num_keys() <= underflow_num_keys_) && (!is_root());
   }
-  DEVICE_QUALIFIER bool is_mergeable(const masstree_node& sibling_node) const {
+  DEVICE_QUALIFIER bool is_mergeable(const masstree_node_warp& sibling_node) const {
     return (num_keys() + sibling_node.num_keys()) < (is_border() ? border_max_num_keys_ : interior_max_num_keys_);
   }
   DEVICE_QUALIFIER bool is_garbage() const {
@@ -314,7 +312,7 @@ struct masstree_node {
                                  size_type* out_key_lengths,
                                  const size_type& layer,
                                  const size_type& out_key_max_length) {
-    using suffix_type = suffix_node<tile_type, allocator_type>;
+    using suffix_type = suffix_node_warp<tile_type, allocator_type>;
     // return values in range, until we meet the link entry
     // the location of first in-range link entry is stored in link_entry_location
     // if there's no link entry in range, link_entry_location = -1
@@ -427,7 +425,7 @@ struct masstree_node {
     return shift_required ? (half_node_width_ - 1) : half_node_width_;
   }
 
-  DEVICE_QUALIFIER void do_split(masstree_node& right_sibling_node,
+  DEVICE_QUALIFIER void do_split(masstree_node_warp& right_sibling_node,
                                  const int left_width) {
     // right_sibling_node has valid node_index_. this function fills its lane_elem_.
     // same-key link and value entries (if both exist) must be in the same node
@@ -474,9 +472,9 @@ struct masstree_node {
   }
 
   // Note parent must be locked before this gets called
-  DEVICE_QUALIFIER void split(masstree_node& right_sibling_node,
+  DEVICE_QUALIFIER void split(masstree_node_warp& right_sibling_node,
                               const value_type parent_index,
-                              masstree_node& parent_node) {
+                              masstree_node_warp& parent_node) {
     // We assume here that the parent is locked
     auto left_width = get_split_left_width();
     do_split(right_sibling_node, left_width);
@@ -486,8 +484,8 @@ struct masstree_node {
     parent_node.insert(pivot_key, right_sibling_node.get_node_index(), 0);
   }
 
-  DEVICE_QUALIFIER void split_as_root(masstree_node& left_child_node,
-                                      masstree_node& right_child_node) {
+  DEVICE_QUALIFIER void split_as_root(masstree_node_warp& left_child_node,
+                                      masstree_node_warp& right_child_node) {
     // Copy the current node into a child
     assert(is_root());
     left_child_node.lane_elem_ = lane_elem_;
@@ -623,8 +621,8 @@ struct masstree_node {
     else if (location_diff == -1) return 0;
     else return -1;
   }
-  DEVICE_QUALIFIER void merge(masstree_node& right_sibling_node,
-                              masstree_node& parent_node) {
+  DEVICE_QUALIFIER void merge(masstree_node_warp& right_sibling_node,
+                              masstree_node_warp& parent_node) {
     // this node is the left sibling
     // copy elements from right sibling node
     elem_type shifted_elem = tile_.shfl_up(right_sibling_node.lane_elem_, num_keys());
@@ -657,8 +655,8 @@ struct masstree_node {
   }
 
   DEVICE_QUALIFIER void merge_to_root(const value_type& parent_index,
-                                      masstree_node& left_child_node,
-                                      masstree_node& right_child_node) {
+                                      masstree_node_warp& left_child_node,
+                                      masstree_node_warp& right_child_node) {
     // this node is parent
     assert(is_root() && num_keys() == 2);
     // copy the children into current node
@@ -689,8 +687,8 @@ struct masstree_node {
     right_child_node.make_garbage_node(true, parent_index);
   }
 
-  DEVICE_QUALIFIER void borrow_left(masstree_node& sibling_node,
-                                    masstree_node& parent_node) {
+  DEVICE_QUALIFIER void borrow_left(masstree_node_warp& sibling_node,
+                                    masstree_node_warp& parent_node) {
     // compute num shift; adjust similar to get_split_left_width()
     uint32_t num_shift = (sibling_node.num_keys() - num_keys()) / 2;
     if (is_border() && (sibling_node.get_keystate_from_location(sibling_node.num_keys() - num_shift - 1) == KEYSTATE_VALUE)) {
@@ -737,9 +735,9 @@ struct masstree_node {
     //));
   }
 
-  DEVICE_QUALIFIER void borrow_right(masstree_node& sibling_node,
-                                     masstree_node& parent_node,
-                                     masstree_node& new_sibling_node) {
+  DEVICE_QUALIFIER void borrow_right(masstree_node_warp& sibling_node,
+                                     masstree_node_warp& parent_node,
+                                     masstree_node_warp& new_sibling_node) {
     // new_sibling_node: only its node_index_ is valid. this fills its lane_elem_.
     // compute num shift; adjust similar to get_split_left_width()
     uint32_t num_shift = (sibling_node.num_keys() - num_keys()) / 2;
@@ -838,8 +836,8 @@ struct masstree_node {
     return true;
   }
 
-  DEVICE_QUALIFIER masstree_node<tile_type, allocator_type>& operator=(
-      const masstree_node<tile_type, allocator_type>& other) {
+  DEVICE_QUALIFIER masstree_node_warp<tile_type, allocator_type>& operator=(
+      const masstree_node_warp<tile_type, allocator_type>& other) {
     node_index_ = other.node_index_;
     lane_elem_ = other.lane_elem_;
     metadata_ = other.metadata_;
@@ -884,8 +882,8 @@ struct masstree_node {
     for (size_type i = 0; i < num_keys(); ++i) {
       uint32_t keystate = get_keystate_from_location(i);
       if (keystate == KEYSTATE_SUFFIX) {
-        elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
-        auto suffix = suffix_node<tile_type, allocator_type>(suffix_index, tile_, allocator_);
+        elem_type suffix_index = get_value_from_location(i);
+        auto suffix = suffix_node_warp<tile_type, allocator_type>(suffix_index, tile_, allocator_);
         suffix.load_head();
         suffix.print();
       }

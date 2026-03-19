@@ -33,16 +33,17 @@ enum request_type: uint8_t {
 
 static constexpr auto target_blocks_per_sm = 8;
 
-template <bool do_reclaim, typename device_func, typename index_type>
+template <bool do_reclaim, bool subwarp, typename device_func, typename index_type>
 __launch_bounds__(index_type::host_reclaimer_type::block_size_, target_blocks_per_sm)
 __global__ void batch_kernel(index_type index,
                              const device_func func,
                              uint32_t num_requests) {
+  static constexpr uint32_t tile_size = subwarp ? 16 : 32;
   using allocator_type = typename index_type::device_allocator_context_type;
   using reclaimer_type = typename index_type::device_reclaimer_context_type;
   __shared__ cg::block_tile_memory<reclaimer_type::block_size_> block_tile_shmem;
   auto block = cg::this_thread_block(block_tile_shmem);
-  auto tile = cg::tiled_partition<index_type::cg_tile_size>(block);
+  auto tile = cg::tiled_partition<tile_size>(block);
   allocator_type allocator{index.allocator_, tile};
   auto block_wide_tile = cg::tiled_partition<reclaimer_type::block_size_>(block);
   extern __shared__ uint32_t reclaimer_shmem_buffer[];
@@ -73,7 +74,7 @@ __global__ void batch_kernel(index_type index,
   if constexpr (do_reclaim) { reclaimer.drain_all(block_wide_tile, tile, allocator); }
 }
 
-template <typename index_type, typename device_func>
+template <bool subwarp, typename index_type, typename device_func>
 void launch_batch_kernel(index_type& index, const device_func& func, uint32_t num_requests, cudaStream_t stream) {
   static constexpr bool do_reclaim = device_func::reclaim_required;
   int block_size = index_type::host_reclaimer_type::block_size_;
@@ -81,24 +82,24 @@ void launch_batch_kernel(index_type& index, const device_func& func, uint32_t nu
   int num_blocks_per_sm;
   cudaOccupancyMaxActiveBlocksPerMultiprocessor(
     &num_blocks_per_sm,
-    kernels::batch_kernel<do_reclaim, device_func, index_type>,
+    kernels::batch_kernel<do_reclaim, subwarp, device_func, index_type>,
     block_size,
     shmem_size);
   cudaDeviceProp device_prop;
   cudaGetDeviceProperties(&device_prop, 0);
   uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
 
-  kernels::batch_kernel<do_reclaim><<<num_blocks, block_size, shmem_size, stream>>>(
+  kernels::batch_kernel<do_reclaim, subwarp><<<num_blocks, block_size, shmem_size, stream>>>(
       index, func, num_requests);
 }
 
 namespace GpuMasstree {
 
-template <typename masstree, typename size_type>
+template <uint32_t tile_size, typename masstree, typename size_type>
 __global__ void initialize_kernel(masstree tree, size_type* d_root_index) {
   using allocator_type = typename masstree::device_allocator_context_type;
   auto block = cg::this_thread_block();
-  auto tile  = cg::tiled_partition<masstree::cg_tile_size>(block);
+  auto tile  = cg::tiled_partition<tile_size>(block);
   allocator_type allocator{tree.allocator_, tile};
   tree.allocate_root_node(d_root_index, tile, allocator);
 }
@@ -371,13 +372,13 @@ struct mixed_device_func {
   }
 };
 
-template <typename masstree, typename func>
+template <uint32_t tile_size, typename masstree, typename func>
 __global__ void traverse_tree_nodes_kernel(masstree tree, func task) {
   // called with single warp; not parallelized for debug purpose
   assert(gridDim.x == 1 && gridDim.y == 1 && gridDim.z == 1);
-  assert(blockDim.x == 32 && blockDim.y == 1 && blockDim.z == 1);
+  assert(blockDim.x == tile_size && blockDim.y == 1 && blockDim.z == 1);
   auto block = cg::this_thread_block();
-  auto tile  = cg::tiled_partition<masstree::cg_tile_size>(block);
+  auto tile  = cg::tiled_partition<tile_size>(block);
   task.init(tile);
   tree.cooperative_traverse_tree_nodes(task, tile);
   task.fini(tile);

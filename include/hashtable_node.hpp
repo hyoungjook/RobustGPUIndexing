@@ -19,7 +19,7 @@
 #include <cstdint>
 #include <macros.hpp>
 #include <utils.hpp>
-#include <suffix.hpp>
+#include <suffix_node_warp.hpp>
 
 template <typename tile_type, typename allocator_type>
 struct hashtable_node {
@@ -364,7 +364,7 @@ struct hashtable_node {
       bool suffix_bit = get_suffix_of_location(i);
       if (suffix_bit) {
         elem_type suffix_index = tile_.shfl(lane_elem_, get_value_lane_from_location(i));
-        auto suffix = suffix_node<tile_type, allocator_type>(suffix_index, tile_, allocator_);
+        auto suffix = suffix_node_warp<tile_type, allocator_type>(suffix_index, tile_, allocator_);
         suffix.load_head();
         suffix.print();
       }

@@ -27,7 +27,7 @@
 #include <ios>
 #include <iostream>
 #include <hashtable_node.hpp>
-#include <suffix.hpp>
+#include <suffix_node_warp.hpp>
 #include <queue>
 #include <sstream>
 #include <type_traits>

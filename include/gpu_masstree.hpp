@@ -27,8 +27,10 @@
 #include <fstream>
 #include <ios>
 #include <iostream>
-#include <masstree_node.hpp>
-#include <suffix.hpp>
+#include <masstree_node_warp.hpp>
+#include <masstree_node_subwarp.hpp>
+#include <suffix_node_warp.hpp>
+#include <suffix_node_subwarp.hpp>
 #include <queue>
 #include <sstream>
 #include <type_traits>
@@ -39,17 +41,27 @@
 #include <simple_dummy_reclaim.hpp>
 #include <simple_debra_reclaim.hpp>
 
+template <typename tile_type, typename allocator_type>
+using masstree_node = std::conditional_t<tile_type::size() == 32,
+                                         masstree_node_warp<tile_type, allocator_type>,
+                                         masstree_node_subwarp<tile_type, allocator_type>>;
+template <typename tile_type, typename allocator_type>
+using suffix_node = std::conditional_t<tile_type::size() == 32,
+                                       suffix_node_warp<tile_type, allocator_type>,
+                                       suffix_node_subwarp<tile_type, allocator_type>>;
+
 namespace GpuMasstree {
 
 template <typename Allocator,
-          typename Reclaimer>
+          typename Reclaimer,
+          bool use_subwarp = true>
 struct gpu_masstree {
   using size_type = uint32_t;
-  using elem_type = uint32_t;
-  using key_slice_type = elem_type;
-  using value_type = elem_type;
+  using key_slice_type = uint32_t;
+  using value_type = uint32_t;
+  using elem_type = std::conditional_t<use_subwarp, uint64_t,   // 8B * 16 threads
+                                                    uint32_t>;  // 4B * 32 threads
   static auto constexpr branching_factor = 16;
-  static auto constexpr cg_tile_size = 2 * branching_factor;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
 
@@ -91,7 +103,7 @@ struct gpu_masstree {
             cudaStream_t stream = 0) {
     kernels::GpuMasstree::find_device_func<concurrent, reuse_root, key_slice_type, size_type, value_type>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
-    kernels::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel<use_subwarp>(*this, func, num_keys, stream);
   }
 
   template <bool enable_suffix = true,
@@ -105,7 +117,7 @@ struct gpu_masstree {
               bool update_if_exists = false) {
     kernels::GpuMasstree::insert_device_func<enable_suffix, reuse_root, key_slice_type, size_type, value_type>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists};
-    kernels::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel<use_subwarp>(*this, func, num_keys, stream);
   }
 
   template <bool do_remove_empty_root = true,
@@ -119,7 +131,7 @@ struct gpu_masstree {
              cudaStream_t stream = 0) {
     kernels::GpuMasstree::erase_device_func<concurrent, do_merge, do_remove_empty_root, reuse_root, key_slice_type, size_type, value_type>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
-    kernels::launch_batch_kernel(*this, func, num_keys, stream);
+    kernels::launch_batch_kernel<use_subwarp>(*this, func, num_keys, stream);
   }
 
   template <bool use_upper_key = true,
@@ -142,7 +154,7 @@ struct gpu_masstree {
            .max_key_length = max_key_length, .max_count_per_query = max_count_per_query,
            .d_upper_keys = upper_keys, .d_upper_key_lengths = upper_key_lengths,
            .d_counts = counts, .d_values = values, .d_out_keys = out_keys, .d_out_key_lengths = out_key_lengths};
-    kernels::launch_batch_kernel(*this, func, num_queries, stream);
+    kernels::launch_batch_kernel<use_subwarp>(*this, func, num_queries, stream);
   }
 
   template <bool enable_suffix = true,
@@ -160,7 +172,7 @@ struct gpu_masstree {
                    bool insert_update_if_exists = false) {
     kernels::GpuMasstree::mixed_device_func<enable_suffix, erase_do_merge, erase_do_remove_empty_root, reuse_root, key_slice_type, size_type, value_type>
       func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
-    kernels::launch_batch_kernel(*this, func, num_requests, stream);
+    kernels::launch_batch_kernel<use_subwarp>(*this, func, num_requests, stream);
   }
 
   // device-side APIs
@@ -284,7 +296,8 @@ struct gpu_masstree {
             if (out_value) { out_value += count; }
             if (out_key_lengths) {out_key_lengths += count;}
             if (out_keys) {
-              utils::fill_output_keys_from_key_slice_stack<0>(key_slice_and_node_index_stack, out_keys, out_key_max_length, layer, count);
+              key_slice_and_node_index_stack.template fill_output_keys<0>(
+                  out_keys, out_key_max_length, layer, count);
               out_keys += (out_key_max_length * count);
             }
           }
@@ -1239,7 +1252,8 @@ struct gpu_masstree {
 
   template <typename func>
   void traverse_tree_nodes(func task) {
-    kernels::GpuMasstree::traverse_tree_nodes_kernel<<<1, 32>>>(*this, task);
+    static constexpr auto block_size = use_subwarp ? 16 : 32;
+    kernels::GpuMasstree::traverse_tree_nodes_kernel<block_size><<<1, block_size>>>(*this, task);
     cudaDeviceSynchronize();
   }
 
@@ -1298,7 +1312,7 @@ struct gpu_masstree {
     }
     template <typename tile_type>
     DEVICE_QUALIFIER void fini(const tile_type& tile) {
-      uint64_t total_bytes_used = (num_nodes_ + num_suffix_nodes_) * (2 * branching_factor * sizeof(elem_type));
+      uint64_t total_bytes_used = (num_nodes_ + num_suffix_nodes_) * 128;
       float bytes_per_entry = static_cast<float>(total_bytes_used) / num_entries_;
       if (tile.thread_rank() == 0) {
         printf("%lu entries, %lu nodes (+%lu suffix nodes) found\n", num_entries_, num_nodes_, num_suffix_nodes_);
@@ -1368,10 +1382,10 @@ struct gpu_masstree {
 
   void initialize() {
     const uint32_t num_blocks = 1;
-    const uint32_t block_size = cg_tile_size;
+    constexpr uint32_t block_size = use_subwarp ? 16 : 32;
     size_type* d_root_index;
     cuda_try(cudaMalloc(&d_root_index, sizeof(size_type)));
-    kernels::GpuMasstree::initialize_kernel<<<num_blocks, block_size>>>(*this, d_root_index);
+    kernels::GpuMasstree::initialize_kernel<block_size><<<num_blocks, block_size>>>(*this, d_root_index);
     cuda_try(cudaDeviceSynchronize());
     cuda_try(cudaMemcpy(&root_index_, d_root_index, sizeof(size_type), cudaMemcpyDeviceToHost));
     cuda_try(cudaFree(d_root_index));
@@ -1381,10 +1395,10 @@ struct gpu_masstree {
   device_allocator_instance_type allocator_;
   device_reclaimer_instance_type reclaimer_;
 
-  template <typename masstree, typename size_type>
+  template <uint32_t tile_size, typename masstree, typename size_type>
   friend __global__ void kernels::GpuMasstree::initialize_kernel(masstree, size_type*);
 
-  template <bool do_reclaim, typename device_func, typename index_type>
+  template <bool do_reclaim, bool subwarp, typename device_func, typename index_type>
   friend __global__ void kernels::batch_kernel(index_type index,
                                               const device_func func,
                                               uint32_t num_requests);

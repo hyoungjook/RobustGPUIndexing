@@ -20,12 +20,13 @@
 #include <utils.hpp>
 
 template <typename tile_type, typename allocator_type>
-struct suffix_node {
+struct suffix_node_warp {
   using elem_type = uint32_t;
   using size_type = uint32_t;
   static constexpr int node_width = 32;
-  DEVICE_QUALIFIER suffix_node(const tile_type& tile, allocator_type& allocator): tile_(tile), allocator_(allocator) {}
-  DEVICE_QUALIFIER suffix_node(size_type index, const tile_type& tile, allocator_type& allocator)
+  static_assert(tile_type::size() == node_width);
+  DEVICE_QUALIFIER suffix_node_warp(const tile_type& tile, allocator_type& allocator): tile_(tile), allocator_(allocator) {}
+  DEVICE_QUALIFIER suffix_node_warp(size_type index, const tile_type& tile, allocator_type& allocator)
       : node_index_(index)
       , tile_(tile)
       , allocator_(allocator) {}
@@ -74,11 +75,11 @@ struct suffix_node {
 
   DEVICE_QUALIFIER bool streq(const elem_type* key, uint32_t key_length) const {
     if (get_key_length() != key_length) { return false; }
+    // now key_length == this_key_length, compare head node
     // ignore first two elements in head
     key -= 2;
     key_length += 2;
     uint32_t skip_elems = 2;
-    // now key_length == this_key_length, compare head node
     auto elem = lane_elem_;
     while (true) {
       bool mismatch = (skip_elems <= tile_.thread_rank()) &&
@@ -315,7 +316,7 @@ struct suffix_node {
   }
 
   template <typename reclaimer_type>
-  DEVICE_QUALIFIER void move_from(suffix_node<tile_type, allocator_type>& src,
+  DEVICE_QUALIFIER void move_from(suffix_node_warp<tile_type, allocator_type>& src,
                                   uint32_t offset,
                                   reclaimer_type& reclaimer) {
     // move elements from src[offset:] and retire all nodes in src
@@ -377,9 +378,7 @@ struct suffix_node {
       utils::memory::store<elem_type, false>(dst_ptr + tile_.thread_rank(), dst_lane_elem);
     }
     else {
-      if (tile_.thread_rank() < node_max_len_ || tile_.thread_rank() == next_lane_) {
-        lane_elem_ = dst_lane_elem;
-      }
+      lane_elem_ = dst_lane_elem;
     }
   }
 
@@ -407,8 +406,8 @@ struct suffix_node {
     return utils::memory::load<elem_type, false>(ptr + head_node_length_lane_);
   }
 
-  DEVICE_QUALIFIER suffix_node<tile_type, allocator_type>& operator=(
-      const suffix_node<tile_type, allocator_type>& other) {
+  DEVICE_QUALIFIER suffix_node_warp<tile_type, allocator_type>& operator=(
+      const suffix_node_warp<tile_type, allocator_type>& other) {
     node_index_ = other.node_index_;
     lane_elem_ = other.lane_elem_;
     return *this;

@@ -31,14 +31,14 @@ namespace utils {
  *  allocator.
  */
 template <int N, typename tile_type, typename DeviceAllocator>
-struct dynamic_stack_u32 {
+struct dynamic_stack_u32_warp {
   using element_type = uint32_t;
   static constexpr uint32_t elems_per_node_ = 32;
   static constexpr uint32_t node_capacity_ = elems_per_node_ - 1;
+  static_assert(tile_type::size() == elems_per_node_);
 
-  DEVICE_QUALIFIER dynamic_stack_u32(DeviceAllocator& allocator, const tile_type& tile)
+  DEVICE_QUALIFIER dynamic_stack_u32_warp(DeviceAllocator& allocator, const tile_type& tile)
       : allocator_(allocator), tile_(tile) {
-    assert(tile.size() == elems_per_node_);
     for (int i = 0; i < N; i++) { lane_elem_[i] = invalid_index; }
   }
 
@@ -121,45 +121,192 @@ private:
   const tile_type& tile_;
 
 public:
-  template <int key_slice_idx, typename dynamic_stack_type>
-  friend DEVICE_QUALIFIER void fill_output_keys_from_key_slice_stack(const dynamic_stack_type& s,
-                                                                     typename dynamic_stack_type::element_type* out_keys,
-                                                                     uint32_t out_key_max_length,
-                                                                     uint32_t layer,
-                                                                     uint32_t count);
-};
-
-template <int key_slice_idx, typename dynamic_stack_type>
-DEVICE_QUALIFIER void fill_output_keys_from_key_slice_stack(const dynamic_stack_type& s,
-                                                            typename dynamic_stack_type::element_type* out_keys,
-                                                            uint32_t out_key_max_length,
-                                                            uint32_t layer,
-                                                            uint32_t count) {
-  // used for gpu_masstree::cooperative_range()
-  if (layer == 0 || count == 0) { return; }
-  auto lane_elem = s.lane_elem_[key_slice_idx];
-  int top = s.top_;
-  while (true) {
-    // store stack_register[0, top] -> out_keys[layer-top-1, layer-1]
-    assert(layer >= top + 1);
-    if (top >= 0) {
-      layer -= (top + 1);
-      for (uint32_t i = 0; i < count; i++) {
-        if (s.tile_.thread_rank() <= top) {
-          out_keys[i * out_key_max_length + layer + s.tile_.thread_rank()] = lane_elem;
+  template <int key_slice_idx>
+  DEVICE_QUALIFIER void fill_output_keys(element_type* out_keys,
+                                         uint32_t out_key_max_length,
+                                         uint32_t layer,
+                                         uint32_t count) {
+    // used for gpu_masstree::cooperative_range()
+    if (layer == 0 || count == 0) { return; }
+    auto lane_elem = lane_elem_[key_slice_idx];
+    int top = top_;
+    while (true) {
+      // store stack_register[0, top] -> out_keys[layer-top-1, layer-1]
+      assert(layer >= top + 1);
+      if (top >= 0) {
+        layer -= (top + 1);
+        for (uint32_t i = 0; i < count; i++) {
+          if (tile_.thread_rank() <= top) {
+            out_keys[i * out_key_max_length + layer + tile_.thread_rank()] = lane_elem;
+          }
         }
       }
+      // fetch node into register
+      auto head = tile_.shfl(lane_elem, loc_of_next_in_node_);
+      if (head == invalid_index) {
+        assert(layer == 0);
+        break;
+      }
+      auto node_ptr = reinterpret_cast<stack_node*>(allocator_.address(head));
+      lane_elem = node_ptr->elems_[tile_.thread_rank()];
+      top = node_capacity_ - 1;
     }
-    // fetch node into register
-    auto head = s.tile_.shfl(lane_elem, dynamic_stack_type::loc_of_next_in_node_);
-    if (head == dynamic_stack_type::invalid_index) {
-      assert(layer == 0);
-      break;
-    }
-    auto node_ptr = reinterpret_cast<typename dynamic_stack_type::stack_node*>(s.allocator_.address(head));
-    lane_elem = node_ptr->elems_[s.tile_.thread_rank()];
-    top = dynamic_stack_type::node_capacity_ - 1;
   }
-}
+};
+
+template <int N, typename tile_type, typename DeviceAllocator>
+struct dynamic_stack_u32_subwarp {
+  using element_type = uint32_t;
+  static constexpr uint32_t elems_per_node_ = 32;
+  static constexpr uint32_t tile_size_ = 16;
+  static constexpr uint32_t node_capacity_ = elems_per_node_ - 1;
+  static_assert(tile_type::size() == tile_size_);
+
+  DEVICE_QUALIFIER dynamic_stack_u32_subwarp(DeviceAllocator& allocator, const tile_type& tile)
+      : allocator_(allocator), tile_(tile) {
+    // only initialize second (contains next index @ last lane)
+    for (int i = 0; i < N; i++) { lane_elem_second_[i] = invalid_index; }
+  }
+
+  template <typename... Ts>
+  DEVICE_QUALIFIER void push(const Ts&... values) {
+    // if register buffer is full, spill to memory
+    if (top_ == (node_capacity_ - 1)) {
+      for (int i = 0; i < N; i++) {
+        auto new_head = allocator_.allocate(tile_);
+        auto* node_ptr = reinterpret_cast<stack_node*>(allocator_.address(new_head));
+        write_register_to_node(i, node_ptr);
+        set_head(i, new_head);
+      }
+      top_ = -1;
+    }
+    // push element to the register buffer
+    top_++;
+    if (top_ < tile_size_) {
+      if (tile_.thread_rank() == top_) {
+        int i = 0;
+        ((lane_elem_first_[i++] = values), ...);
+      }
+    }
+    else {
+      if (tile_.thread_rank() == top_ - tile_size_) {
+        int i = 0;
+        ((lane_elem_second_[i++] = values), ...);
+      }
+    }
+  }
+
+  template <typename... Ts>
+  DEVICE_QUALIFIER void pop(Ts&... values) {
+    // if register buffer is empty, load from memory
+    if (top_ < 0) {
+      for (int i = 0; i < N; i++) {
+        auto old_head = get_head(i);
+        assert(old_head != invalid_index);
+        auto* node_ptr = reinterpret_cast<stack_node*>(allocator_.address(old_head));
+        read_register_from_node(i, node_ptr);
+        allocator_.deallocate_coop(old_head, tile_);
+      }
+      top_ = node_capacity_ - 1;
+    }
+    // pop element from the register buffer
+    if (top_ < tile_size_) {
+      int i = 0;
+      ((values = tile_.shfl(lane_elem_first_[i++], top_)), ...);
+    }
+    else {
+      int i = 0;
+      ((values = tile_.shfl(lane_elem_second_[i++], top_ - tile_size_)), ...);
+    }
+    
+    top_--;
+  }
+
+  DEVICE_QUALIFIER void destroy() {
+    for (int i = 0; i < N; i++) {
+      auto head = get_head(i);
+      while (head != invalid_index) {
+        auto node_ptr = reinterpret_cast<stack_node*>(allocator_.address(head));
+        auto next = node_ptr->get_next();
+        allocator_.deallocate_coop(head, tile_);
+        head = next;
+      }
+    }
+  }
+
+private:
+  static constexpr element_type invalid_index = std::numeric_limits<element_type>::max();
+  static constexpr uint32_t lane_of_next_ = tile_size_ - 1; // second
+  static constexpr uint32_t loc_of_next_in_node_ = elems_per_node_ - 1;
+  struct stack_node {
+    // first 31 elements are values, the last 1 element is the next node pointer.
+    element_type elems_[elems_per_node_];
+    DEVICE_QUALIFIER element_type get_next() const { return elems_[loc_of_next_in_node_]; }
+  };
+  DEVICE_QUALIFIER element_type get_head(int i) const {
+    return tile_.shfl(lane_elem_second_[i], lane_of_next_);
+  }
+  DEVICE_QUALIFIER void set_head(int i,const element_type& head) {
+    if (tile_.thread_rank() == lane_of_next_) { lane_elem_second_[i] = head; }
+  }
+  DEVICE_QUALIFIER void write_register_to_node(int i, stack_node* ptr) {
+    ptr->elems_[tile_.thread_rank()] = lane_elem_first_[i];
+    ptr->elems_[tile_size_ + tile_.thread_rank()] = lane_elem_second_[i];
+  }
+  DEVICE_QUALIFIER void read_register_from_node(int i, stack_node* ptr) {
+    lane_elem_first_[i] = ptr->elems_[tile_.thread_rank()];
+    lane_elem_second_[i] = ptr->elems_[tile_size_ + tile_.thread_rank()];
+  }
+
+  int top_ = -1;
+  // stack_node stored in register, i'th elem in i'th lane
+  element_type lane_elem_first_[N];
+  element_type lane_elem_second_[N];
+  DeviceAllocator& allocator_;
+  const tile_type& tile_;
+
+public:
+  template <int key_slice_idx>
+  DEVICE_QUALIFIER void fill_output_keys(element_type* out_keys,
+                                         uint32_t out_key_max_length,
+                                         uint32_t layer,
+                                         uint32_t count) {
+    // used for gpu_masstree::cooperative_range()
+    if (layer == 0 || count == 0) { return; }
+    auto lane_elem_first = lane_elem_first_[key_slice_idx];
+    auto lane_elem_second = lane_elem_first_[key_slice_idx];
+    int top = top_;
+    while (true) {
+      // store stack_register[0, top] -> out_keys[layer-top-1, layer-1]
+      assert(layer >= top + 1);
+      if (top >= 0) {
+        layer -= (top + 1);
+        for (uint32_t i = 0; i < count; i++) {
+          if (tile_.thread_rank() <= top) {
+            out_keys[i * out_key_max_length + layer + tile_.thread_rank()] = lane_elem_first;
+          }
+          if (tile_size_ + tile_.thread_rank() <= top) {
+            out_keys[i * out_key_max_length + layer + tile_size_ + tile_.thread_rank()] = lane_elem_second;
+          }
+        }
+      }
+      // fetch node into register
+      auto head = tile_.shfl(lane_elem_second, lane_of_next_);
+      if (head == invalid_index) {
+        assert(layer == 0);
+        break;
+      }
+      auto node_ptr = reinterpret_cast<stack_node*>(allocator_.address(head));
+      lane_elem_first = node_ptr->elems_[tile_.thread_rank()];
+      lane_elem_second = node_ptr->elems_[tile_size_ + tile_.thread_rank()];
+      top = node_capacity_ - 1;
+    }
+  }
+};
+
+template <int N, typename tile_type, typename DeviceAllocator>
+using dynamic_stack_u32 = std::conditional_t<tile_type::size() == 32,
+                                             dynamic_stack_u32_warp<N, tile_type, DeviceAllocator>,
+                                             dynamic_stack_u32_subwarp<N, tile_type, DeviceAllocator>>;
 
 } // namespace utils
