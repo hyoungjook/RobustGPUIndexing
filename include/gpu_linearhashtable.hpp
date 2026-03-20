@@ -595,7 +595,8 @@ struct gpu_linearhashtable {
 
     DEVICE_QUALIFIER global_state(size_type initial_directory_size)
         : directory_size_(initial_directory_size)
-        , mutex_(0) {}
+        , mutex_(0)
+        , num_entries_(0) {}
     
     template <bool atomic, bool acquire = true>
     DEVICE_QUALIFIER size_type load_directory_size() {

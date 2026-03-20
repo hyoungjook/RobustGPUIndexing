@@ -196,6 +196,7 @@ struct device_reclaimer_context<simple_debra_reclaimer<buffer_size_per_block>> {
     static_assert(tile_type::size() == warp_size_);
     // only one tile is required, exit the rest to free hardware resource
     if (block.thread_rank() >= warp_size_) { return; }
+    tile.sync();
     while (true) {
       // check all bags are empty
       bool bag_empty = true;
