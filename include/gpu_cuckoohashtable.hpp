@@ -42,7 +42,7 @@ namespace GpuHashtable {
 
 template <typename Allocator,
           typename Reclaimer,
-          bool use_subwarp = false>
+          bool use_subwarp = true>
 struct gpu_cuckoohashtable {
   using size_type = uint32_t;
   using elem_type = uint32_t;

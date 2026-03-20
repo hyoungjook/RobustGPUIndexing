@@ -42,7 +42,7 @@ namespace GpuMasstree {
 
 template <typename Allocator,
           typename Reclaimer,
-          bool use_subwarp = false>
+          bool use_subwarp = true>
 struct gpu_masstree {
   using size_type = uint32_t;
   using key_slice_type = uint32_t;
