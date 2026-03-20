@@ -34,7 +34,7 @@ struct hashtable_node_warp {
       : tile_(tile), allocator_(allocator) {}
   DEVICE_QUALIFIER hashtable_node_warp(size_type index, const tile_type& tile, allocator_type& allocator)
       : node_index_(index), tile_(tile), allocator_(allocator) {}
-  DEVICE_QUALIFIER void initialize_empty(bool is_head, size_type local_depth = 0) {
+  DEVICE_QUALIFIER void initialize_empty(bool is_head, size_type local_depth = 0, bool is_locked = false) {
     lane_elem_ = 0;
     metadata_ = (
       (0u << num_keys_offset_) |  // num_keys = 0;
@@ -42,6 +42,7 @@ struct hashtable_node_warp {
       (0u & garbage_bit_mask_)    // is_garbage = false;
     );
     if (is_head) { metadata_ |= head_bit_mask_; }
+    if (is_locked) { metadata_ |= lock_bit_mask_; }
     metadata_ |= (local_depth << local_depth_bits_offset_);
     write_metadata_to_registers();
   }
