@@ -22,16 +22,17 @@
 #include <suffix_node_warp.hpp>
 
 template <typename tile_type, typename allocator_type>
-struct hashtable_node {
+struct hashtable_node_subwarp {
   using elem_type = uint32_t;
   using key_type = elem_type;
   using value_type = elem_type;
   using size_type = uint32_t;
   static constexpr int node_width = 16;
   static constexpr int capacity = node_width - 1;
-  DEVICE_QUALIFIER hashtable_node(const tile_type& tile, allocator_type& allocator)
+  static_assert(tile_type::size() == node_width);
+  DEVICE_QUALIFIER hashtable_node_subwarp(const tile_type& tile, allocator_type& allocator)
       : tile_(tile), allocator_(allocator) {}
-  DEVICE_QUALIFIER hashtable_node(size_type index, const tile_type& tile, allocator_type& allocator)
+  DEVICE_QUALIFIER hashtable_node_subwarp(size_type index, const tile_type& tile, allocator_type& allocator)
       : node_index_(index), tile_(tile), allocator_(allocator)
   {
     assert(tile_.size() == 2 * node_width);
@@ -131,7 +132,7 @@ struct hashtable_node {
   DEVICE_QUALIFIER bool is_full() const {
     return (num_keys() == max_num_keys_);
   }
-  DEVICE_QUALIFIER bool is_mergeable(const hashtable_node& next_node) const {
+  DEVICE_QUALIFIER bool is_mergeable(const hashtable_node_subwarp& next_node) const {
     return (num_keys() + next_node.num_keys()) <= max_num_keys_;
   }
   DEVICE_QUALIFIER bool get_suffix_of_location(int location) const {
@@ -271,7 +272,7 @@ struct hashtable_node {
     }
   }
 
-  DEVICE_QUALIFIER void merge(const hashtable_node<tile_type, allocator_type>& next_node) {
+  DEVICE_QUALIFIER void merge(const hashtable_node_subwarp<tile_type, allocator_type>& next_node) {
     assert(is_mergeable(next_node));
     // copy elements from next node
     bool suffix_bit = get_suffix_of_location(tile_.thread_rank());
@@ -318,8 +319,8 @@ struct hashtable_node {
     write_metadata_to_registers();
   }
 
-  DEVICE_QUALIFIER hashtable_node<tile_type, allocator_type>& operator=(
-        const hashtable_node<tile_type, allocator_type>& other) {
+  DEVICE_QUALIFIER hashtable_node_subwarp<tile_type, allocator_type>& operator=(
+        const hashtable_node_subwarp<tile_type, allocator_type>& other) {
     node_index_ = other.node_index_;
     lane_elem_ = other.lane_elem_;
     metadata_ = other.metadata_;

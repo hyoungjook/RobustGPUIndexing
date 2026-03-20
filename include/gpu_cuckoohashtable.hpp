@@ -26,8 +26,8 @@
 #include <fstream>
 #include <ios>
 #include <iostream>
-#include <hashtable_node.hpp>
-#include <suffix_node_warp.hpp>
+#include <nodes.hpp>
+#include <compute_hash.hpp>
 #include <queue>
 #include <sstream>
 #include <type_traits>
@@ -41,13 +41,15 @@
 namespace GpuHashtable {
 
 template <typename Allocator,
-          typename Reclaimer>
+          typename Reclaimer,
+          bool use_subwarp = false>
 struct gpu_cuckoohashtable {
   using size_type = uint32_t;
   using elem_type = uint32_t;
   using key_slice_type = elem_type;
   using value_type = elem_type;
   using table_ptr_type = uint64_t;
+  static constexpr bool use_subwarp_ = use_subwarp;
   static auto constexpr bucket_size = 32;
   static std::size_t constexpr bucket_bytes = sizeof(elem_type) * bucket_size;
   static auto constexpr cg_tile_size = 32;
@@ -112,7 +114,7 @@ struct gpu_cuckoohashtable {
             value_type* values,
             const size_type num_keys,
             cudaStream_t stream = 0) {
-    kernels::GpuHashtable::find_device_func<concurrent, use_hash_tag, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::find_device_func<gpu_cuckoohashtable, concurrent, use_hash_tag>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
@@ -125,7 +127,7 @@ struct gpu_cuckoohashtable {
               const size_type num_keys,
               cudaStream_t stream = 0,
               bool update_if_exists = false) {
-    kernels::GpuHashtable::insert_device_func<use_hash_tag, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::insert_device_func<gpu_cuckoohashtable, use_hash_tag>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists};
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
@@ -136,7 +138,7 @@ struct gpu_cuckoohashtable {
              const size_type* key_lengths,
              const size_type num_keys,
              cudaStream_t stream = 0) {
-    kernels::GpuHashtable::erase_device_func<use_hash_tag, true, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::erase_device_func<gpu_cuckoohashtable, use_hash_tag, true>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
@@ -151,7 +153,7 @@ struct gpu_cuckoohashtable {
                    const size_type num_requests,
                    cudaStream_t stream = 0,
                    bool insert_update_if_exists = false) {
-    kernels::GpuHashtable::mixed_device_func<use_hash_tag, true, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::mixed_device_func<gpu_cuckoohashtable, use_hash_tag, true>
       func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
     kernels::launch_batch_kernel(*this, func, num_requests, stream);
   }
@@ -164,18 +166,18 @@ struct gpu_cuckoohashtable {
                                                device_allocator_context_type& allocator) {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    auto hash = compute_hashx2(key, key_length, tile);
+    auto hash = utils::compute_hashx2<utils::PRIME0, utils::PRIME1>(key, key_length, tile);
     const bool more_key = (key_length > 1);
     key_slice_type first_slice = (use_hash_tag && more_key) ?
         (hash.x + hash.y) : key[0];
-    uint32_t table_i = ((hash.x ^ hash.y) * hash_prime2) % num_hfs; // 2-in-d cuckoo hashing
+    uint32_t table_i = ((hash.x ^ hash.y) * utils::PRIME2) % num_hfs; // 2-in-d cuckoo hashing
     auto node0 = node_type(bucket_index_of(table_i, hash.x), tile, allocator);
     auto node1 = node_type(bucket_index_of((table_i + 1) % num_hfs, hash.y), tile, allocator);
     int location_if_found;
     suffix_type suffix_if_found(tile, allocator);
     size_type version;
     if constexpr (concurrent) {
-      version = utils::memory::load<size_type, true, true>(d_versions_ + ((first_slice * hash_prime2) % version_counter_size));
+      version = utils::memory::load<size_type, true, true>(d_versions_ + ((first_slice * utils::PRIME2) % version_counter_size));
     }
     while (true) {
       #define TRY_GET_KEY_FROM_NODE(node) \
@@ -189,7 +191,7 @@ struct gpu_cuckoohashtable {
       TRY_GET_KEY_FROM_NODE(node1)
       #undef TRY_GET_KEY_FROM_NODE
       if constexpr (concurrent) {
-        auto new_version = utils::memory::load<size_type, true, true>(d_versions_ + ((first_slice * hash_prime2) % version_counter_size));
+        auto new_version = utils::memory::load<size_type, true, true>(d_versions_ + ((first_slice * utils::PRIME2) % version_counter_size));
         if (version != new_version || (new_version % 2 != 0)) {
           version = new_version;
           continue;
@@ -210,11 +212,11 @@ struct gpu_cuckoohashtable {
                                            bool update_if_exists = false) {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    auto hash = compute_hashx2(key, key_length, tile);
+    auto hash = utils::compute_hashx2<utils::PRIME0, utils::PRIME1>(key, key_length, tile);
     const bool more_key = (key_length > 1);
     key_slice_type first_slice = (use_hash_tag && more_key) ?
         (hash.x + hash.y) : key[0];
-    uint32_t table_i = ((hash.x ^ hash.y) * hash_prime2) % num_hfs; // 2-in-d cuckoo hashing
+    uint32_t table_i = ((hash.x ^ hash.y) * utils::PRIME2) % num_hfs; // 2-in-d cuckoo hashing
     auto node0 = node_type(bucket_index_of(table_i, hash.x), tile, allocator);
     auto node1 = node_type(bucket_index_of((table_i + 1) % num_hfs, hash.y), tile, allocator);
     int location_if_found;
@@ -310,13 +312,13 @@ struct gpu_cuckoohashtable {
               other_node.insert(target_key, target_value, target_suffix); \
               node.erase(__ffs(to_check) - 1); \
               if (tile.thread_rank() == 0) { \
-                cuda::atomic_ref<size_type, cuda::thread_scope_device> version_ref(d_versions_[(target_key * hash_prime2) % version_counter_size]); \
+                cuda::atomic_ref<size_type, cuda::thread_scope_device> version_ref(d_versions_[(target_key * utils::PRIME2) % version_counter_size]); \
                 version_ref.fetch_add(1, cuda::memory_order_release); \
               } \
               other_node.template store_to_array<false>(d_table_); \
               node.template store_to_array<false>(d_table_); \
               if (tile.thread_rank() == 0) { \
-                cuda::atomic_ref<size_type, cuda::thread_scope_device> version_ref(d_versions_[(target_key * hash_prime2) % version_counter_size]); \
+                cuda::atomic_ref<size_type, cuda::thread_scope_device> version_ref(d_versions_[(target_key * utils::PRIME2) % version_counter_size]); \
                 version_ref.fetch_add(1, cuda::memory_order_release); \
               } \
               cuckoo_succeed = true; \
@@ -344,11 +346,11 @@ struct gpu_cuckoohashtable {
                                           device_reclaimer_context_type& reclaimer) {
     using node_type = hashtable_node<tile_type, device_allocator_context_type>;
     using suffix_type = suffix_node<tile_type, device_allocator_context_type>;
-    auto hash = compute_hashx2(key, key_length, tile);
+    auto hash = utils::compute_hashx2<utils::PRIME0, utils::PRIME1>(key, key_length, tile);
     const bool more_key = (key_length > 1);
     key_slice_type first_slice = (use_hash_tag && more_key) ?
         (hash.x + hash.y) : key[0];
-    uint32_t table_i = ((hash.x ^ hash.y) * hash_prime2) % num_hfs; // 2-in-d cuckoo hashing
+    uint32_t table_i = ((hash.x ^ hash.y) * utils::PRIME2) % num_hfs; // 2-in-d cuckoo hashing
     auto node0 = node_type(bucket_index_of(table_i, hash.x), tile, allocator);
     auto node1 = node_type(bucket_index_of((table_i + 1) % num_hfs, hash.y), tile, allocator);
     // lock all nodes in order
@@ -440,13 +442,13 @@ struct gpu_cuckoohashtable {
       auto suffix_index = node.get_value_from_location(location);
       auto suffix = suffix_type(suffix_index, tile, allocator);
       suffix.load_head();
-      hash = compute_hashx2_for_suffix<use_hash_tag>(
+      hash = utils::compute_hashx2_suffix<utils::PRIME0, utils::PRIME1, !use_hash_tag>(
         suffix, use_hash_tag ? 0 : node.get_key_from_location(location), tile);
     }
     else {
-      hash = compute_hashx2_single_slice(node.get_key_from_location(location), tile);
+      hash = utils::compute_hashx2_slice<utils::PRIME0, utils::PRIME1>(node.get_key_from_location(location), tile);
     }
-    uint32_t target_table_i = ((hash.x ^ hash.y) * hash_prime2) % num_hfs;
+    uint32_t target_table_i = ((hash.x ^ hash.y) * utils::PRIME2) % num_hfs;
     // two hash buckets for the key are
     //    (target_table_i,                  hash.x % num_buckets_per_hf_) and
     //    ((target_table_i + 1) % num_hfs,  hash.y % num_buckets_per_hf_)
@@ -477,89 +479,6 @@ struct gpu_cuckoohashtable {
     }
   }
 
-  static constexpr uint32_t hash_prime0 = 0x9e3779b1;
-  static constexpr uint32_t hash_prime1 = 0x01000193;
-  static constexpr uint32_t hash_prime2 = 0xfffffffb;
-  static DEVICE_QUALIFIER uint32_t hash_murmur3_finalizer(uint32_t hash) {
-    hash ^= hash >> 16;
-    hash *= 0x85ebca6b;
-    hash ^= hash >> 13;
-    hash *= 0xc2b2ae35;
-    hash ^= hash >> 16;
-    return hash;
-  }
-  template <typename tile_type>
-  static DEVICE_QUALIFIER uint2 compute_hashx2(const key_slice_type* key, size_type key_length, const tile_type& tile) {
-    static constexpr uint32_t prime0_multiplier = utils::constexpr_pow(hash_prime0, cg_tile_size);
-    static constexpr uint32_t prime1_multiplier = utils::constexpr_pow(hash_prime1, cg_tile_size);
-    // 1. exponent = [1, p, p^2, ..., p^31]; parallel prefix product
-    uint32_t exponent0 = (tile.thread_rank() == 0) ? 1 : hash_prime0;
-    uint32_t exponent1 = (tile.thread_rank() == 0) ? 1 : hash_prime1;
-    for (uint32_t offset = 1; offset < cg_tile_size; offset <<= 1) {
-      auto up_exponent0 = tile.shfl_up(exponent0, offset);
-      auto up_exponent1 = tile.shfl_up(exponent1, offset);
-      if (tile.thread_rank() >= offset) {
-        exponent0 *= up_exponent0;
-        exponent1 *= up_exponent1;
-      }
-    }
-    // 2. compute per-lane value
-    const auto original_length = key_length;
-    uint32_t hash = 0, hash1 = 0;
-    while (true) {
-      if (tile.thread_rank() < key_length) {
-        auto slice = key[tile.thread_rank()];
-        hash += exponent0 * slice;
-        hash1 += exponent1 * slice;
-      }
-      if (key_length <= cg_tile_size) { break; }
-      key += cg_tile_size;
-      key_length -= cg_tile_size;
-      exponent0 *= prime0_multiplier;
-      exponent1 *= prime1_multiplier;
-    }
-    // 3. reduce sum
-    for (uint32_t offset = (cg_tile_size / 2); offset != 0; offset >>= 1) {
-      hash += tile.shfl_down(hash, offset);
-      hash1 += tile.shfl_up(hash1, offset);
-    }
-    hash = ((hash * hash_prime0) + original_length) * hash_prime0;
-    hash1 = ((hash1 * hash_prime1) + original_length) * hash_prime1;
-    if (tile.thread_rank() == cg_tile_size - 1) { hash = hash1; }
-    // 4. finalize
-    hash = hash_murmur3_finalizer(hash);
-    return make_uint2(tile.shfl(hash, 0), tile.shfl(hash, cg_tile_size - 1));
-  }
-  template <typename tile_type>
-  static DEVICE_QUALIFIER uint2 compute_hashx2_single_slice(const key_slice_type& key,
-                                                     const tile_type& tile) {
-    // if key_length == 1, hash = murmur3(((key * p) + 1) * p)
-    uint2 hash = make_uint2(((key * hash_prime0) + 1) * hash_prime0,
-                            ((key * hash_prime1) + 1) * hash_prime1);
-    if (tile.thread_rank() == 1) { hash.x = hash.y; }
-    hash.x = hash_murmur3_finalizer(hash.x);
-    return make_uint2(tile.shfl(hash.x, 0), tile.shfl(hash.x, 1));
-  }
-  template <bool use_hash_tag, typename suffix_type, typename tile_type>
-  static DEVICE_QUALIFIER uint2 compute_hashx2_for_suffix(const suffix_type& suffix,
-                                                   const key_slice_type& first_slice,
-                                                   const tile_type& tile) {
-    // compute polynomial
-    uint2 hash = suffix.template compute_polynomialx2<hash_prime0, hash_prime1>();
-    if constexpr (!use_hash_tag) {
-      hash.x = (hash.x * hash_prime0) + first_slice;
-      hash.y = (hash.y * hash_prime1) + first_slice;
-    }
-    static constexpr uint32_t suffix_offset = use_hash_tag ? 0 : 1;
-    uint32_t key_length = suffix.get_key_length() + suffix_offset;
-    hash.x = ((hash.x * hash_prime0) + key_length) * hash_prime0;
-    hash.y = ((hash.y * hash_prime1) + key_length) * hash_prime1;
-    // finalize
-    if (tile.thread_rank() == 1) { hash.x = hash.y; }
-    hash.x = hash_murmur3_finalizer(hash.x);
-    return make_uint2(tile.shfl(hash.x, 0), tile.shfl(hash.x, 1));
-  }
-
  public:
   // device-side debug functions
   template <typename tile_type, typename Func>
@@ -580,7 +499,8 @@ struct gpu_cuckoohashtable {
 
   template <typename func>
   void traverse_nodes(func task) {
-    kernels::GpuHashtable::traverse_nodes_kernel<<<1, 32>>>(*this, task);
+    static constexpr auto block_size = use_subwarp ? 16 : 32;
+    kernels::GpuHashtable::traverse_nodes_kernel<block_size><<<1, block_size>>>(*this, task);
     cudaDeviceSynchronize();
   }
 
@@ -671,8 +591,8 @@ struct gpu_cuckoohashtable {
 
   void initialize() {
     const uint32_t num_blocks = num_buckets_per_hf_ * num_hfs;
-    const uint32_t block_size = cg_tile_size;
-    kernels::GpuHashtable::initialize_kernel<<<num_blocks, block_size>>>(*this);
+    const uint32_t block_size = use_subwarp ? 16 : 32;
+    kernels::GpuHashtable::initialize_kernel<block_size><<<num_blocks, block_size>>>(*this);
     cuda_try(cudaDeviceSynchronize());
     cuda_try(cudaMemset(d_versions_, 0, sizeof(size_type) * version_counter_size));
   }
@@ -684,10 +604,10 @@ struct gpu_cuckoohashtable {
   device_allocator_instance_type allocator_;
   device_reclaimer_instance_type reclaimer_;
 
-  template <typename hashtable>
+  template <uint32_t tile_size, typename hashtable>
   friend __global__ void kernels::GpuHashtable::initialize_kernel(hashtable);
 
-  template <bool do_reclaim, typename device_func, typename index_type>
+  template <bool do_reclaim, bool subwarp, typename device_func, typename index_type>
   friend __global__ void kernels::batch_kernel(index_type index,
                                               const device_func func,
                                               uint32_t num_requests);

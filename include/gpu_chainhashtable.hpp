@@ -26,8 +26,8 @@
 #include <fstream>
 #include <ios>
 #include <iostream>
-#include <hashtable_node.hpp>
-#include <suffix_node_warp.hpp>
+#include <nodes.hpp>
+#include <compute_hash.hpp>
 #include <queue>
 #include <sstream>
 #include <type_traits>
@@ -41,13 +41,15 @@
 namespace GpuHashtable {
 
 template <typename Allocator,
-          typename Reclaimer>
+          typename Reclaimer,
+          bool use_subwarp = false>
 struct gpu_chainhashtable {
   using size_type = uint32_t;
   using elem_type = uint32_t;
   using key_slice_type = elem_type;
   using value_type = elem_type;
   using table_ptr_type = uint64_t;
+  static constexpr bool use_subwarp_ = use_subwarp;
   static auto constexpr bucket_size = 32;
   static std::size_t constexpr bucket_bytes = sizeof(elem_type) * bucket_size;
   static auto constexpr cg_tile_size = 32;
@@ -103,7 +105,7 @@ struct gpu_chainhashtable {
             value_type* values,
             const size_type num_keys,
             cudaStream_t stream = 0) {
-    kernels::GpuHashtable::find_device_func<concurrent, use_hash_tag, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::find_device_func<gpu_chainhashtable, concurrent, use_hash_tag>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values};
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
@@ -116,7 +118,7 @@ struct gpu_chainhashtable {
               const size_type num_keys,
               cudaStream_t stream = 0,
               bool update_if_exists = false) {
-    kernels::GpuHashtable::insert_device_func<use_hash_tag, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::insert_device_func<gpu_chainhashtable, use_hash_tag>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .update_if_exists = update_if_exists};
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
@@ -128,7 +130,7 @@ struct gpu_chainhashtable {
              const size_type* key_lengths,
              const size_type num_keys,
              cudaStream_t stream = 0) {
-    kernels::GpuHashtable::erase_device_func<use_hash_tag, do_merge, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::erase_device_func<gpu_chainhashtable, use_hash_tag, do_merge>
       func{.d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths};
     kernels::launch_batch_kernel(*this, func, num_keys, stream);
   }
@@ -144,7 +146,7 @@ struct gpu_chainhashtable {
                    const size_type num_requests,
                    cudaStream_t stream = 0,
                    bool insert_update_if_exists = false) {
-    kernels::GpuHashtable::mixed_device_func<use_hash_tag, erase_do_merge, key_slice_type, size_type, value_type>
+    kernels::GpuHashtable::mixed_device_func<gpu_chainhashtable, use_hash_tag, erase_do_merge>
       func{.d_types = request_types, .d_keys = keys, .max_key_length = max_key_length, .d_key_lengths = key_lengths, .d_values = values, .d_results = results, .insert_update_if_exists = insert_update_if_exists};
     kernels::launch_batch_kernel(*this, func, num_requests, stream);
   }
@@ -161,12 +163,12 @@ struct gpu_chainhashtable {
     size_type bucket_index;
     const bool more_key = (key_length > 1);
     if (use_hash_tag && more_key) {
-      auto hash = compute_hashx2(key, key_length, tile);
+      auto hash = utils::compute_hashx2<utils::PRIME0, utils::PRIME1>(key, key_length, tile);
       bucket_index = hash.x;
       first_slice = hash.y;
     }
     else {
-      bucket_index = compute_hash(key, key_length, tile);
+      bucket_index = utils::compute_hash<utils::PRIME0>(key, key_length, tile);
       first_slice = key[0];
     }
     bucket_index %= num_buckets_;
@@ -200,12 +202,12 @@ struct gpu_chainhashtable {
     size_type bucket_index;
     const bool more_key = (key_length > 1);
     if (use_hash_tag && more_key) {
-      auto hash = compute_hashx2(key, key_length, tile);
+      auto hash = utils::compute_hashx2<utils::PRIME0, utils::PRIME1>(key, key_length, tile);
       bucket_index = hash.x;
       first_slice = hash.y;
     }
     else {
-      bucket_index = compute_hash(key, key_length, tile);
+      bucket_index = utils::compute_hash<utils::PRIME0>(key, key_length, tile);
       first_slice = key[0];
     }
     bucket_index %= num_buckets_;
@@ -268,12 +270,12 @@ struct gpu_chainhashtable {
     size_type bucket_index;
     const bool more_key = (key_length > 1);
     if (use_hash_tag && more_key) {
-      auto hash = compute_hashx2(key, key_length, tile);
+      auto hash = utils::compute_hashx2<utils::PRIME0, utils::PRIME1>(key, key_length, tile);
       bucket_index = hash.x;
       first_slice = hash.y;
     }
     else {
-      bucket_index = compute_hash(key, key_length, tile);
+      bucket_index = utils::compute_hash<utils::PRIME0>(key, key_length, tile);
       first_slice = key[0];
     }
     bucket_index %= num_buckets_;
@@ -414,93 +416,6 @@ struct gpu_chainhashtable {
     return -1;
   }
 
-  static constexpr uint32_t hash_prime0 = 0x9e3779b1;
-  static constexpr uint32_t hash_prime1 = 0x01000193;
-  static DEVICE_QUALIFIER uint32_t hash_murmur3_finalizer(uint32_t hash) {
-    hash ^= hash >> 16;
-    hash *= 0x85ebca6b;
-    hash ^= hash >> 13;
-    hash *= 0xc2b2ae35;
-    hash ^= hash >> 16;
-    return hash;
-  }
-  template <typename tile_type>
-  static DEVICE_QUALIFIER uint32_t compute_hash(const key_slice_type* key, size_type key_length, const tile_type& tile) {
-    // parallel polynomial rolling hash
-    static constexpr uint32_t prime_multiplier = utils::constexpr_pow(hash_prime0, cg_tile_size);
-    // 1. exponent = [1, p, p^2, ..., p^31]; parallel prefix product
-    uint32_t exponent = (tile.thread_rank() == 0) ? 1 : hash_prime0;
-    for (uint32_t offset = 1; offset < cg_tile_size; offset <<= 1) {
-      auto up_exponent = tile.shfl_up(exponent, offset);
-      if (tile.thread_rank() >= offset) {
-        exponent *= up_exponent;
-      }
-    }
-    // 2. compute per-lane value
-    const auto original_length = key_length;
-    uint32_t hash = 0;
-    while (true) {
-      if (tile.thread_rank() < key_length) {
-        auto slice = key[tile.thread_rank()];
-        hash += exponent * slice;
-      }
-      if (key_length <= cg_tile_size) { break; }
-      key += cg_tile_size;
-      key_length -= cg_tile_size;
-      exponent *= prime_multiplier;
-    }
-    // 3. reduce sum
-    for (uint32_t offset = (cg_tile_size / 2); offset != 0; offset >>= 1) {
-      hash += tile.shfl_down(hash, offset);
-    }
-    hash = ((hash * hash_prime0) + original_length) * hash_prime0;
-    // 4. finalize
-    hash = hash_murmur3_finalizer(hash);
-    return tile.shfl(hash, 0);
-  }
-  template <typename tile_type>
-  static DEVICE_QUALIFIER uint2 compute_hashx2(const key_slice_type* key, size_type key_length, const tile_type& tile) {
-    static constexpr uint32_t prime0_multiplier = utils::constexpr_pow(hash_prime0, cg_tile_size);
-    static constexpr uint32_t prime1_multiplier = utils::constexpr_pow(hash_prime1, cg_tile_size);
-    // 1. exponent = [1, p, p^2, ..., p^31]; parallel prefix product
-    uint32_t exponent0 = (tile.thread_rank() == 0) ? 1 : hash_prime0;
-    uint32_t exponent1 = (tile.thread_rank() == 0) ? 1 : hash_prime1;
-    for (uint32_t offset = 1; offset < cg_tile_size; offset <<= 1) {
-      auto up_exponent0 = tile.shfl_up(exponent0, offset);
-      auto up_exponent1 = tile.shfl_up(exponent1, offset);
-      if (tile.thread_rank() >= offset) {
-        exponent0 *= up_exponent0;
-        exponent1 *= up_exponent1;
-      }
-    }
-    // 2. compute per-lane value
-    const auto original_length = key_length;
-    uint32_t hash = 0, hash1 = 0;
-    while (true) {
-      if (tile.thread_rank() < key_length) {
-        auto slice = key[tile.thread_rank()];
-        hash += exponent0 * slice;
-        hash1 += exponent1 * slice;
-      }
-      if (key_length <= cg_tile_size) { break; }
-      key += cg_tile_size;
-      key_length -= cg_tile_size;
-      exponent0 *= prime0_multiplier;
-      exponent1 *= prime1_multiplier;
-    }
-    // 3. reduce sum
-    for (uint32_t offset = (cg_tile_size / 2); offset != 0; offset >>= 1) {
-      hash += tile.shfl_down(hash, offset);
-      hash1 += tile.shfl_up(hash1, offset);
-    }
-    hash = ((hash * hash_prime0) + original_length) * hash_prime0;
-    hash1 = ((hash1 * hash_prime1) + original_length) * hash_prime1;
-    if (tile.thread_rank() == cg_tile_size - 1) { hash = hash1; }
-    // 4. finalize
-    hash = hash_murmur3_finalizer(hash);
-    return make_uint2(tile.shfl(hash, 0), tile.shfl(hash, cg_tile_size - 1));
-  }
-
  public:
   // device-side debug functions
   template <typename tile_type, typename Func>
@@ -524,7 +439,8 @@ struct gpu_chainhashtable {
 
   template <typename func>
   void traverse_nodes(func task) {
-    kernels::GpuHashtable::traverse_nodes_kernel<<<1, 32>>>(*this, task);
+    static constexpr auto block_size = use_subwarp ? 16 : 32;
+    kernels::GpuHashtable::traverse_nodes_kernel<block_size><<<1, block_size>>>(*this, task);
     cudaDeviceSynchronize();
   }
 
@@ -623,8 +539,8 @@ struct gpu_chainhashtable {
 
   void initialize() {
     const uint32_t num_blocks = num_buckets_;
-    const uint32_t block_size = cg_tile_size;
-    kernels::GpuHashtable::initialize_kernel<<<num_blocks, block_size>>>(*this);
+    const uint32_t block_size = use_subwarp ? 16 : 32;
+    kernels::GpuHashtable::initialize_kernel<block_size><<<num_blocks, block_size>>>(*this);
     cuda_try(cudaDeviceSynchronize());
   }
 
@@ -634,10 +550,10 @@ struct gpu_chainhashtable {
   device_allocator_instance_type allocator_;
   device_reclaimer_instance_type reclaimer_;
 
-  template <typename hashtable>
+  template <uint32_t tile_size, typename hashtable>
   friend __global__ void kernels::GpuHashtable::initialize_kernel(hashtable);
 
-  template <bool do_reclaim, typename device_func, typename index_type>
+  template <bool do_reclaim, bool subwarp, typename device_func, typename index_type>
   friend __global__ void kernels::batch_kernel(index_type index,
                                               const device_func func,
                                               uint32_t num_requests);
