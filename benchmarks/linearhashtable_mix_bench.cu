@@ -292,10 +292,17 @@ int main(int argc, char** argv) {
     << find_ratio << std::endl;
   using simple_slab_linear_alloc_type = simple_slab_linear_allocator<128>;
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
-  using linearhashtable_type = GpuLinearHashtable::gpu_linearhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type>;
+  using linearhashtable_tile32_type = GpuLinearHashtable::gpu_linearhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type, 32>;
+  using linearhashtable_tile16_type = GpuLinearHashtable::gpu_linearhashtable<simple_slab_linear_alloc_type, simple_debra_reclaim_type, 16>;
 
-  std::cout << "Benchmarking linearhashtable_type" << std::endl;
-  mix_bench_linearhashtable<linearhashtable_type>(
+  std::cout << "Benchmarking linearhashtable_tile32_type" << std::endl;
+  mix_bench_linearhashtable<linearhashtable_tile32_type>(
+    d_keys, d_lengths, d_values, half_num_keys,
+    d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
+    max_key_length, initial_directory_size, resize_policy, load_factor_threshold, num_experiments, verbose
+  );
+  std::cout << "Benchmarking linearhashtable_tile16_type" << std::endl;
+  mix_bench_linearhashtable<linearhashtable_tile16_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
     max_key_length, initial_directory_size, resize_policy, load_factor_threshold, num_experiments, verbose

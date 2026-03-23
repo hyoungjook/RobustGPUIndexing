@@ -42,14 +42,15 @@ namespace GpuMasstree {
 
 template <typename Allocator,
           typename Reclaimer,
-          bool use_subwarp = true>
+          uint32_t tile_size = 16>
 struct gpu_masstree {
   using size_type = uint32_t;
   using key_slice_type = uint32_t;
   using value_type = uint32_t;
-  using elem_type = std::conditional_t<use_subwarp, uint64_t,   // 8B * 16 threads
-                                                    uint32_t>;  // 4B * 32 threads
-  static constexpr bool use_subwarp_ = use_subwarp;
+  using elem_type = std::conditional_t<tile_size == 16, uint64_t,   // 8B * 16 threads
+                                                        uint32_t>;  // 4B * 32 threads
+  static constexpr uint32_t tile_size_ = tile_size;
+  static_assert(tile_size == 32 || tile_size == 16);
   static auto constexpr branching_factor = 16;
 
   static constexpr value_type invalid_value = std::numeric_limits<value_type>::max();
@@ -1241,7 +1242,7 @@ struct gpu_masstree {
 
   template <typename func>
   void traverse_tree_nodes(func task) {
-    static constexpr auto block_size = use_subwarp ? 16 : 32;
+    static constexpr auto block_size = tile_size_;
     kernels::GpuMasstree::traverse_tree_nodes_kernel<block_size><<<1, block_size>>>(*this, task);
     cudaDeviceSynchronize();
   }
@@ -1371,7 +1372,7 @@ struct gpu_masstree {
 
   void initialize() {
     const uint32_t num_blocks = 1;
-    constexpr uint32_t block_size = use_subwarp ? 16 : 32;
+    constexpr uint32_t block_size = tile_size_;
     size_type* d_root_index;
     cuda_try(cudaMalloc(&d_root_index, sizeof(size_type)));
     kernels::GpuMasstree::initialize_kernel<block_size><<<num_blocks, block_size>>>(*this, d_root_index);
@@ -1384,10 +1385,10 @@ struct gpu_masstree {
   device_allocator_instance_type allocator_;
   device_reclaimer_instance_type reclaimer_;
 
-  template <uint32_t tile_size, typename masstree, typename size_type>
+  template <uint32_t _tile_size, typename masstree, typename size_type>
   friend __global__ void kernels::GpuMasstree::initialize_kernel(masstree, size_type*);
 
-  template <bool do_reclaim, bool subwarp, typename device_func, typename index_type>
+  template <bool do_reclaim, uint32_t _tile_size, typename device_func, typename index_type>
   friend __global__ void kernels::batch_kernel(index_type index,
                                               const device_func func,
                                               uint32_t num_requests);

@@ -285,10 +285,17 @@ int main(int argc, char** argv) {
     << find_ratio << std::endl;
   using simple_slab_alloc_type = simple_slab_allocator<128>;
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
-  using masstree_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type>;
+  using masstree_tile32_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, 32>;
+  using masstree_tile16_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, 16>;
 
-  std::cout << "Benchmarking masstree_type" << std::endl;
-  mix_bench_masstree<masstree_type>(
+  std::cout << "Benchmarking masstree_tile32_type" << std::endl;
+  mix_bench_masstree<masstree_tile32_type>(
+    d_keys, d_lengths, d_values, half_num_keys,
+    d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
+    max_key_length, num_experiments, verbose
+  );
+  std::cout << "Benchmarking masstree_tile16_type" << std::endl;
+  mix_bench_masstree<masstree_tile16_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
     max_key_length, num_experiments, verbose

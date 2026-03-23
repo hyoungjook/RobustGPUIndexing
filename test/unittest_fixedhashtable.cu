@@ -175,10 +175,10 @@ using simple_dummy_reclaim_type = simple_dummy_reclaimer;
 using simple_debra_reclaim_type = simple_debra_reclaimer<>;
 
 typedef testing::Types<
-    MapData<GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type, false>>,
-    MapData<GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type, true>>,
-    MapData<GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type, false>>,
-    MapData<GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type, true>>>
+    MapData<GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type, 32>>,
+    MapData<GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type, 16>>,
+    MapData<GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type, 32>>,
+    MapData<GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type, 16>>>
     Implementations;
 
 TYPED_TEST_SUITE(MapTest, Implementations);

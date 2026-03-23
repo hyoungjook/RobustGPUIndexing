@@ -289,17 +289,31 @@ int main(int argc, char** argv) {
     << find_ratio << std::endl;
   using simple_slab_alloc_type = simple_slab_allocator<128>;
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
-  using chainhashtable_type = GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type>;
-  using cuckoohashtable_type = GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type>;
+  using chainhashtable_tile32_type = GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type, 32>;
+  using chainhashtable_tile16_type = GpuHashtable::gpu_chainhashtable<simple_slab_alloc_type, simple_debra_reclaim_type, 16>;
+  using cuckoohashtable_tile32_type = GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type, 32>;
+  using cuckoohashtable_tile16_type = GpuHashtable::gpu_cuckoohashtable<simple_slab_alloc_type, simple_debra_reclaim_type, 16>;
 
-  std::cout << "Benchmarking chainhashtable_type" << std::endl;
-  mix_bench_hashtable<chainhashtable_type>(
+  std::cout << "Benchmarking chainhashtable_tile32_type" << std::endl;
+  mix_bench_hashtable<chainhashtable_tile32_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
     max_key_length, total_num_inserts, chain_array_factor, num_experiments, verbose
   );
-  std::cout << "Benchmarking cuckoohashtable_type" << std::endl;
-  mix_bench_hashtable<cuckoohashtable_type>(
+  std::cout << "Benchmarking chainhashtable_tile16_type" << std::endl;
+  mix_bench_hashtable<chainhashtable_tile16_type>(
+    d_keys, d_lengths, d_values, half_num_keys,
+    d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
+    max_key_length, total_num_inserts, chain_array_factor, num_experiments, verbose
+  );
+  std::cout << "Benchmarking cuckoohashtable_tile32_type" << std::endl;
+  mix_bench_hashtable<cuckoohashtable_tile32_type>(
+    d_keys, d_lengths, d_values, half_num_keys,
+    d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
+    max_key_length, total_num_inserts, cuckoo_fill_factor, num_experiments, verbose
+  );
+  std::cout << "Benchmarking cuckoohashtable_tile16_type" << std::endl;
+  mix_bench_hashtable<cuckoohashtable_tile16_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
     max_key_length, total_num_inserts, cuckoo_fill_factor, num_experiments, verbose

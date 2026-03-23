@@ -33,12 +33,12 @@ enum request_type: uint8_t {
 
 static constexpr auto target_blocks_per_sm = 8;
 
-template <bool do_reclaim, bool subwarp, typename device_func, typename index_type>
+template <bool do_reclaim, uint32_t tile_size, typename device_func, typename index_type>
 __launch_bounds__(index_type::host_reclaimer_type::block_size_, target_blocks_per_sm)
 __global__ void batch_kernel(index_type index,
                              const device_func func,
                              uint32_t num_requests) {
-  static constexpr uint32_t tile_size = subwarp ? 16 : 32;
+  static_assert(tile_size == 32 || tile_size == 16);
   using allocator_type = typename index_type::device_allocator_context_type;
   using reclaimer_type = typename index_type::device_reclaimer_context_type;
   __shared__ cg::block_tile_memory<reclaimer_type::block_size_> block_tile_shmem;
@@ -85,14 +85,14 @@ void launch_batch_kernel(index_type& index, const device_func& func, uint32_t nu
   int num_blocks_per_sm;
   cudaOccupancyMaxActiveBlocksPerMultiprocessor(
     &num_blocks_per_sm,
-    kernels::batch_kernel<do_reclaim, index_type::use_subwarp_, device_func, index_type>,
+    kernels::batch_kernel<do_reclaim, index_type::tile_size_, device_func, index_type>,
     block_size,
     shmem_size);
   cudaDeviceProp device_prop;
   cudaGetDeviceProperties(&device_prop, 0);
   uint32_t num_blocks = num_blocks_per_sm * device_prop.multiProcessorCount;
 
-  kernels::batch_kernel<do_reclaim, index_type::use_subwarp_><<<num_blocks, block_size, shmem_size, stream>>>(
+  kernels::batch_kernel<do_reclaim, index_type::tile_size_><<<num_blocks, block_size, shmem_size, stream>>>(
       index, func, num_requests);
 }
 

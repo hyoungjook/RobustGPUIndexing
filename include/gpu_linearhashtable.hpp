@@ -42,14 +42,15 @@ namespace GpuLinearHashtable {
 
 template <typename Allocator,
           typename Reclaimer,
-          bool use_subwarp = true>
+          uint32_t tile_size = 16>
 struct gpu_linearhashtable {
   using size_type = uint32_t;
   using elem_type = uint32_t;
   using key_slice_type = elem_type;
   using value_type = elem_type;
   using table_ptr_type = uint64_t;
-  static constexpr bool use_subwarp_ = use_subwarp;
+  static constexpr uint32_t tile_size_ = tile_size;
+  static_assert(tile_size == 32 || tile_size == 16);
   static auto constexpr bucket_size = 32;
   static std::size_t constexpr bucket_bytes = sizeof(elem_type) * bucket_size;
 
@@ -890,7 +891,7 @@ struct gpu_linearhashtable {
 
   template <typename func>
   void traverse_nodes(func task) {
-    static constexpr auto block_size = use_subwarp ? 16 : 32;
+    static constexpr auto block_size = tile_size_;
     kernels::GpuLinearHashtable::traverse_nodes_kernel<block_size><<<1, block_size>>>(*this, task);
     cudaDeviceSynchronize();
   }
@@ -1003,7 +1004,7 @@ struct gpu_linearhashtable {
 
   void initialize() {
     const uint32_t num_blocks = initial_directory_size_;
-    const uint32_t block_size = use_subwarp ? 16 : 32;
+    const uint32_t block_size = tile_size_;
     kernels::GpuLinearHashtable::initialize_kernel<block_size><<<num_blocks, block_size>>>(*this);
     cuda_try(cudaDeviceSynchronize());
   }
@@ -1016,10 +1017,10 @@ struct gpu_linearhashtable {
   device_allocator_instance_type allocator_;
   device_reclaimer_instance_type reclaimer_;
 
-  template <uint32_t tile_size, typename linearhashtable>
+  template <uint32_t _tile_size, typename linearhashtable>
   friend __global__ void kernels::GpuLinearHashtable::initialize_kernel(linearhashtable);
 
-  template <bool do_reclaim, bool subwarp, typename device_func, typename index_type>
+  template <bool do_reclaim, uint32_t _tile_size, typename device_func, typename index_type>
   friend __global__ void kernels::batch_kernel(index_type index,
                                               const device_func func,
                                               uint32_t num_requests);

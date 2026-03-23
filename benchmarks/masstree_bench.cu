@@ -37,7 +37,6 @@ using value_type = uint32_t;
 using size_type = uint32_t;
 
 template <typename masstree_type,
-          bool find_successor_concurrent = false,
           bool enable_suffix = true,
           bool erase_remove_empty_root = true,
           bool erase_merge = true,
@@ -58,8 +57,10 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
                     bool validate_index = false,
                     bool verbose = false) {
   float average_insert_seconds = 0.f;
-  float average_find_seconds = 0.f;
-  float average_successor_seconds = 0.f;
+  float average_find_readonly_seconds = 0.f;
+  float average_find_concurrent_seconds = 0.f;
+  float average_successor_readonly_seconds = 0.f;
+  float average_successor_concurrent_seconds = 0.f;
   float average_erase_seconds = 0.f;
   std::size_t valid_count = 0;
 
@@ -81,25 +82,45 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
     float insert_elapsed = insert_timer.get_elapsed_s();
     average_insert_seconds += insert_elapsed;
 
-    gpu_timer find_timer;
-    find_timer.start_timer();
-    tree.template find<find_successor_concurrent, reuse_root>(
+    gpu_timer find_timer1;
+    find_timer1.start_timer();
+    tree.template find<false, reuse_root>(
       d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys);
-    find_timer.stop_timer();
+    find_timer1.stop_timer();
     cuda_try(cudaDeviceSynchronize());
-    float find_elapsed = find_timer.get_elapsed_s();
-    average_find_seconds += find_elapsed;
+    float find_elapsed1 = find_timer1.get_elapsed_s();
+    average_find_readonly_seconds += find_elapsed1;
 
-    gpu_timer successor_timer;
-    successor_timer.start_timer();
-    tree.template scan<false, find_successor_concurrent, reuse_root>(
+    gpu_timer find_timer2;
+    find_timer2.start_timer();
+    tree.template find<true, reuse_root>(
+      d_query_keys.data().get(), max_key_length, d_query_lengths.data().get(), d_query_results.data().get(), num_keys);
+    find_timer2.stop_timer();
+    cuda_try(cudaDeviceSynchronize());
+    float find_elapsed2 = find_timer2.get_elapsed_s();
+    average_find_concurrent_seconds += find_elapsed2;
+
+    gpu_timer successor_timer1;
+    successor_timer1.start_timer();
+    tree.template scan<false, false, reuse_root>(
       d_query_keys.data().get(), d_query_lengths.data().get(),
       max_key_length, max_counts_per_query, num_keys,
       nullptr, nullptr, nullptr, d_query_results.data().get(), nullptr, nullptr);
-    successor_timer.stop_timer();
+    successor_timer1.stop_timer();
     cuda_try(cudaDeviceSynchronize());
-    auto successor_elapsed = successor_timer.get_elapsed_s();
-    average_successor_seconds += successor_elapsed;
+    auto successor_elapsed1 = successor_timer1.get_elapsed_s();
+    average_successor_readonly_seconds += successor_elapsed1;
+
+    gpu_timer successor_timer2;
+    successor_timer2.start_timer();
+    tree.template scan<false, true, reuse_root>(
+      d_query_keys.data().get(), d_query_lengths.data().get(),
+      max_key_length, max_counts_per_query, num_keys,
+      nullptr, nullptr, nullptr, d_query_results.data().get(), nullptr, nullptr);
+    successor_timer2.stop_timer();
+    cuda_try(cudaDeviceSynchronize());
+    auto successor_elapsed2 = successor_timer2.get_elapsed_s();
+    average_successor_concurrent_seconds += successor_elapsed2;
 
     if (validate_index && exp == 0) {
       tree.validate();
@@ -121,8 +142,10 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
     if (verbose) {
       std::cout << exp << " "
                 << insert_elapsed << " "
-                << find_elapsed << " "
-                << successor_elapsed << " "
+                << find_elapsed1 << " "
+                << find_elapsed2 << " "
+                << successor_elapsed1 << " "
+                << successor_elapsed2 << " "
                 << erase_elapsed << std::endl;
     }
     if (validate_result) {
@@ -139,16 +162,22 @@ void bench_masstree(thrust::device_vector<key_slice_type>& d_keys,
   }
 
   average_insert_seconds /= float(num_experiments);
-  average_find_seconds /= float(num_experiments);
-  average_successor_seconds /= float(num_experiments);
+  average_find_readonly_seconds /= float(num_experiments);
+  average_find_concurrent_seconds /= float(num_experiments);
+  average_successor_readonly_seconds /= float(num_experiments);
+  average_successor_concurrent_seconds /= float(num_experiments);
   average_erase_seconds /= float(num_experiments);
   float insertion_rate = float(d_lengths.size()) / 1e6 / average_insert_seconds;
-  float find_rate = float(d_query_lengths.size()) / 1e6 / average_find_seconds;
-  float successor_rate = float(d_query_lengths.size()) / 1e6 / average_successor_seconds;
+  float find_readonly_rate = float(d_query_lengths.size()) / 1e6 / average_find_readonly_seconds;
+  float find_concurrent_rate = float(d_query_lengths.size()) / 1e6 / average_find_concurrent_seconds;
+  float successor_readonly_rate = float(d_query_lengths.size()) / 1e6 / average_successor_readonly_seconds;
+  float successor_concurrent_rate = float(d_query_lengths.size()) / 1e6 / average_successor_concurrent_seconds;
   float erase_rate      = float(d_query_lengths.size()) * erase_ratio / 1e6 / average_erase_seconds;
   std::cout << "insert: " << insertion_rate << " Mop/s" << std::endl;
-  std::cout << "find: " << find_rate << " Mop/s" << std::endl;
-  std::cout << "successor: " << successor_rate << " Mop/s" << std::endl;
+  std::cout << "find(readonly): " << find_readonly_rate << " Mop/s" << std::endl;
+  std::cout << "find(concurrent): " << find_concurrent_rate << " Mop/s" << std::endl;
+  std::cout << "successor(readonly): " << successor_readonly_rate << " Mop/s" << std::endl;
+  std::cout << "successor(concurrent): " << successor_concurrent_rate << " Mop/s" << std::endl;
   std::cout << "erase: " << erase_rate << " Mop/s" << std::endl;
   if (validate_result) {
     if (valid_count == num_experiments) {
@@ -280,16 +309,17 @@ int main(int argc, char** argv) {
   std::cout << "erase-ratio = " << erase_ratio << std::endl;
   using simple_slab_alloc_type = simple_slab_allocator<128>;
   using simple_debra_reclaim_type = simple_debra_reclaimer<>;
-  using masstree_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type>;
+  using masstree_tile32_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, 32>;
+  using masstree_tile16_type = GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, 16>;
 
-  std::cout << "Benchmarking masstree_type weak-reads" << std::endl;
-  bench_masstree<masstree_type, false>(
+  std::cout << "Benchmarking masstree_tile32_type" << std::endl;
+  bench_masstree<masstree_tile32_type>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, max_counts_per_query, num_experiments, erase_ratio,
     validate_result, validate_index, verbose
   );
-  std::cout << "Benchmarking masstree_type atomic-reads" << std::endl;
-  bench_masstree<masstree_type, true>(
+  std::cout << "Benchmarking masstree_tile16_type" << std::endl;
+  bench_masstree<masstree_tile16_type>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, max_counts_per_query, num_experiments, erase_ratio,
     validate_result, validate_index, verbose

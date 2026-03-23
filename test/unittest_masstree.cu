@@ -270,8 +270,8 @@ using simple_dummy_reclaim_type = simple_dummy_reclaimer;
 using simple_debra_reclaim_type = simple_debra_reclaimer<>;
 
 typedef testing::Types<
-    MapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, false>>,
-    MapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, true>>>
+    MapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, 32>>,
+    MapData<GpuMasstree::gpu_masstree<simple_slab_alloc_type, simple_debra_reclaim_type, 16>>>
     Implementations;
 
 TYPED_TEST_SUITE(MapTest, Implementations);
