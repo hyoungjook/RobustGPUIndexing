@@ -26,6 +26,7 @@
 #include <host_allocators.hpp>
 #include <cooperative_groups/reduce.h>
 #include <device_context.hpp>
+#include <compute_hash.hpp>
 
 template <uint32_t slab_size = 128>
 struct simple_slab_linear_allocator {
@@ -143,11 +144,9 @@ struct device_allocator_context<simple_slab_linear_allocator<slab_size>> {
         slab_index = try_allocate_in_block(block_index_, tile);
       }
     }
+    pointer_type ptr = (block_index_ * num_slabs_in_block_) + slab_index;
     // manage load factor
-    //  NOTE since try_allocate_in_block() fills slab_index from 0 to 1023 (small to large),
-    //  better to use the last modulo value here (represents all the previous bits are filled)
-    //  yet becomes just an approximate if deallocate() pops in.
-    if (slab_index % check_load_factor_every_ == (check_load_factor_every_ - 1)) {
+    if (utils::finalize(ptr) % check_load_factor_every_ == 0) {
       size_type num_slabs;
       if (tile.thread_rank() == 0) {
         cuda::atomic_ref<size_type, cuda::thread_scope_device> num_slabs_ref(alloc_.counts_->num_slabs_);
@@ -177,7 +176,7 @@ struct device_allocator_context<simple_slab_linear_allocator<slab_size>> {
         }
       }
     }
-    return (block_index_ * num_slabs_in_block_) + slab_index;
+    return ptr;
   }
 
   template <typename tile_type>
@@ -188,7 +187,7 @@ struct device_allocator_context<simple_slab_linear_allocator<slab_size>> {
   }
   DEVICE_QUALIFIER uint32_t deallocate_perlane(pointer_type p) {
     deallocate_in_block(p);
-    return (p % check_load_factor_every_ == (check_load_factor_every_ - 1)) ? 1 : 0;
+    return (utils::finalize(p) % check_load_factor_every_ == 0) ? 1 : 0;
   }
   template <typename tile_type>
   DEVICE_QUALIFIER void deallocate_perlane_finish_sync(uint32_t sum, const tile_type& tile) {
