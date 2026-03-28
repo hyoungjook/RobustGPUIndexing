@@ -19,7 +19,7 @@ set(GTEST_TESTS
 foreach(TEST ${GTEST_TESTS})
     add_executable(${TEST} ${TEST}.cu)
     set_target_properties(${TEST} PROPERTIES FOLDER "tests")
-    target_link_libraries(${TEST} PRIVATE gpu_btrees PRIVATE gtest)
+    target_link_libraries(${TEST} PRIVATE robust_gpu_indexing PRIVATE gtest)
 endforeach()
 
 

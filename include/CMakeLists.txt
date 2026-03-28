@@ -1,10 +1,10 @@
-add_library(gpu_btrees_src INTERFACE)
+add_library(robust_gpu_indexing_src INTERFACE)
 
-file(GLOB_RECURSE   gpu_btrees_src
+file(GLOB_RECURSE   robust_gpu_indexing_src
                     "*.h"
                     "*.hpp"
                     "*.cuh"
                     "*.cu")
-set(SOURCE_LIST ${gpu_btrees_src})
-target_sources(gpu_btrees INTERFACE ${gpu_btrees_src})
-target_include_directories(gpu_btrees INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")
+set(SOURCE_LIST ${robust_gpu_indexing_src})
+target_sources(robust_gpu_indexing INTERFACE ${robust_gpu_indexing_src})
+target_include_directories(robust_gpu_indexing INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}")

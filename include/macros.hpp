@@ -41,3 +41,9 @@ inline constexpr void cuda_assert(bool expression_result) {
     // assert(0);
   }
 }
+
+#define check_argument(expr) \
+if (!(expr)) { \
+  std::cerr << "Argument check failed at " << __FILE__ << ":" << __LINE__ << " on " << #expr << std::endl; \
+  std::abort(); \
+}

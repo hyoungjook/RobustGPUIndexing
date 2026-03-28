@@ -16,6 +16,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 # options
 option(build_benchmarks "Build benchmarks" ON)
 option(build_tests "Build tests" ON)
+option(build_evaluation "Build evaluation" ON)
 
 
 # Auto-detect GPU architecture, sets ${CUDA_ARCHS}
@@ -27,8 +28,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 set(json_output_directory "${CMAKE_CURRENT_SOURCE_DIR}/outputs")
 
 
-# B-Tree lib
-add_library(gpu_btrees INTERFACE)
+# library
+add_library(robust_gpu_indexing INTERFACE)
 
 # CUDA and C++ compiler flags
 set(CXX_FLAGS
@@ -64,7 +65,7 @@ target_compile_options(developer_flags INTERFACE
     $<$<COMPILE_LANGUAGE:CXX>:${CXX_FLAGS}>
     $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_FLAGS}>)
 
-target_link_libraries(gpu_btrees
+target_link_libraries(robust_gpu_indexing
     INTERFACE $<BUILD_INTERFACE:developer_flags>
     INTERFACE $<IF:$<CXX_COMPILER_ID:MSVC>,,-lstdc++fs>)
 
@@ -99,3 +100,7 @@ endif(build_tests)
 if(build_benchmarks)
    add_subdirectory(benchmarks)
 endif(build_benchmarks)
+
+if(build_evaluation)
+   add_subdirectory(evaluation)
+endif(build_evaluation)

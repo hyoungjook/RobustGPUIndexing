@@ -42,7 +42,7 @@ namespace GpuLinearHashtable {
 
 template <typename Allocator,
           typename Reclaimer,
-          uint32_t tile_size = 16>
+          uint32_t tile_size = 32>
 struct gpu_linearhashtable {
   using size_type = uint32_t;
   using elem_type = uint32_t;
