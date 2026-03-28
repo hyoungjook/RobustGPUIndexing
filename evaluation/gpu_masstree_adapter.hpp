@@ -119,6 +119,9 @@ struct gpu_masstree_adapter {
     uint32_t tile_size;
     bool lookup_concurrent;
     bool enable_suffix;
+    inline static const char* merge_level_strings[4] = {
+      "naive", "concurrent", "merge", "remove_root"
+    };
     uint32_t merge_level;  // 0: naive, 1: concurrent, 2: merge, 3: remove_root
     bool reuse_root;
 
@@ -138,7 +141,7 @@ struct gpu_masstree_adapter {
                 << "  tile-size: " << tile_size << std::endl
                 << "  lookup-concurrent: " << lookup_concurrent << std::endl
                 << "  enable-suffix: " << enable_suffix << std::endl
-                << "  merge-level: " << merge_level << std::endl
+                << "  merge-level: " << merge_level << "(" << merge_level_strings[merge_level] << ")" << std::endl
                 << "  reuse-root: " << reuse_root << std::endl
                 ;
     }

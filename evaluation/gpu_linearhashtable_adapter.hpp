@@ -114,7 +114,13 @@ struct gpu_linearhashtable_adapter {
     uint32_t initial_directory_size;
     float resize_policy;
     float load_factor_threshold;
+    inline static const char* hash_tag_level_strings[3] = {
+      "slice0_tag", "hash_tag", "samehash_tag"
+    };
     uint32_t hash_tag_level;  // 0: 1st slice as tag, 1: hash tag, 2: same hash tag
+    inline static const char* merge_level_strings[3] = {
+      "naive", "merge_chains", "merge_buckets"
+    };
     uint32_t merge_level;   // 0: naive, 1: merge chains, 2: merge buckets
     bool reuse_dirsize;
 
@@ -140,8 +146,8 @@ struct gpu_linearhashtable_adapter {
                 << "  initial-directory_size: " << initial_directory_size << std::endl
                 << "  resize-policy: " << resize_policy << std::endl
                 << "  load-factor-threshold: " << load_factor_threshold << std::endl
-                << "  hash-tag-level: " << hash_tag_level << std::endl
-                << "  merge-level: " << merge_level << std::endl
+                << "  hash-tag-level: " << hash_tag_level << "(" << hash_tag_level_strings[hash_tag_level] << ")" << std::endl
+                << "  merge-level: " << merge_level << "(" << merge_level_strings[merge_level] << ")" << std::endl
                 << "  reuse-dirsize: " << reuse_dirsize<< std::endl
                 ;
     }
