@@ -114,11 +114,11 @@ struct gpu_cuckoohashtable_adapter {
       check_argument(0 < initial_array_fill_factor && initial_array_fill_factor <= 0.9f);
     }
     void print() const {
-      std::cout << "  allocator-pool-ratio: " << allocator_pool_ratio << std::endl
-                << "  tile-size: " << tile_size << std::endl
-                << "  lookup-concurrent: " << lookup_concurrent << std::endl
-                << "  initial-array-fill-factor: " << initial_array_fill_factor << std::endl
-                << "  use-hash-tag: " << use_hash_tag << std::endl
+      std::cout << "    allocator-pool-ratio: " << allocator_pool_ratio << std::endl
+                << "    tile-size: " << tile_size << std::endl
+                << "    lookup-concurrent: " << lookup_concurrent << std::endl
+                << "    initial-array-fill-factor: " << initial_array_fill_factor << std::endl
+                << "    use-hash-tag: " << use_hash_tag << std::endl
                 ;
     }
   };

@@ -139,15 +139,15 @@ struct gpu_linearhashtable_adapter {
       check_argument(hash_tag_level <= 2);
     }
     void print() const {
-      std::cout << "  allocator-pool-ratio: " << allocator_pool_ratio << std::endl
-                << "  tile-size: " << tile_size << std::endl
-                << "  lookup-concurrent: " << lookup_concurrent << std::endl
-                << "  initial-directory_size: " << initial_directory_size << std::endl
-                << "  resize-policy: " << resize_policy << std::endl
-                << "  load-factor-threshold: " << load_factor_threshold << std::endl
-                << "  hash-tag-level: " << hash_tag_level << "(" << hash_tag_level_strings[hash_tag_level] << ")" << std::endl
-                << "  merge-level: " << merge_level << "(" << merge_level_strings[merge_level] << ")" << std::endl
-                << "  reuse-dirsize: " << reuse_dirsize<< std::endl
+      std::cout << "    allocator-pool-ratio: " << allocator_pool_ratio << std::endl
+                << "    tile-size: " << tile_size << std::endl
+                << "    lookup-concurrent: " << lookup_concurrent << std::endl
+                << "    initial-directory_size: " << initial_directory_size << std::endl
+                << "    resize-policy: " << resize_policy << std::endl
+                << "    load-factor-threshold: " << load_factor_threshold << std::endl
+                << "    hash-tag-level: " << hash_tag_level << "(" << hash_tag_level_strings[hash_tag_level] << ")" << std::endl
+                << "    merge-level: " << merge_level << "(" << merge_level_strings[merge_level] << ")" << std::endl
+                << "    reuse-dirsize: " << reuse_dirsize<< std::endl
                 ;
     }
   };

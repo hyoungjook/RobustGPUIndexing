@@ -138,12 +138,12 @@ struct gpu_masstree_adapter {
       check_argument(merge_level <= 3);
     }
     void print() const {
-      std::cout << "  allocator-pool-ratio: " << allocator_pool_ratio << std::endl
-                << "  tile-size: " << tile_size << std::endl
-                << "  lookup-concurrent: " << lookup_concurrent << std::endl
-                << "  enable-suffix: " << enable_suffix << std::endl
-                << "  merge-level: " << merge_level << "(" << merge_level_strings[merge_level] << ")" << std::endl
-                << "  reuse-root: " << reuse_root << std::endl
+      std::cout << "    allocator-pool-ratio: " << allocator_pool_ratio << std::endl
+                << "    tile-size: " << tile_size << std::endl
+                << "    lookup-concurrent: " << lookup_concurrent << std::endl
+                << "    enable-suffix: " << enable_suffix << std::endl
+                << "    merge-level: " << merge_level << "(" << merge_level_strings[merge_level] << ")" << std::endl
+                << "    reuse-root: " << reuse_root << std::endl
                 ;
     }
   };

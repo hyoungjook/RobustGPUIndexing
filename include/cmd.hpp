@@ -75,7 +75,7 @@ std::optional<T> get_arg_value(const std::vector<std::string>& arguments, const 
       } else if constexpr (std::is_same<T, std::string>::value) {
         return std::string(argument_value);
       } else if constexpr (std::is_same<T, bool>::value) {
-        return str_tolower(argument_value) == "true";
+        return str_tolower(argument_value) == "true" || argument_value == "1";
       } else {
         std::cout << "Unknown type" << std::endl;
         std::terminate();

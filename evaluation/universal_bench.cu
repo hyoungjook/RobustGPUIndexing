@@ -28,12 +28,14 @@
 #include <mutex>
 #include <cmd.hpp>
 #include <gpu_timer.hpp>
+#if defined(UNIVERSAL_BENCH_WITH_ROBUST_INDEX)
 #include <gpu_masstree_adapter.hpp>
 #include <gpu_chainhashtable_adapter.hpp>
 #include <gpu_cuckoohashtable_adapter.hpp>
 #include <gpu_linearhashtable_adapter.hpp>
-#ifdef UNIVERSAL_BENCH_WITH_BASELINE
-#include <gpu_btree_adapter.hpp>
+#elif defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
+#include <gpu_blink_tree_adapter.hpp>
+#include <gpu_dycuckoo_adapter.hpp>
 #endif
 
 using key_slice_type = uint32_t;
@@ -351,13 +353,12 @@ int main(int argc, char** argv) {
                  num_lookups < std::numeric_limits<size_type>::max() &&
                  num_scans < std::numeric_limits<size_type>::max());
 
-  #ifdef UNIVERSAL_BENCH_WITH_BASELINE
-  #define FORALL_INDEXES(x) \
-  x(gpu_masstree) x(gpu_chainhashtable) x(gpu_cuckoohashtable) x(gpu_linearhashtable) \
-  x(gpu_blink_tree) 
-  #else
+  #if defined(UNIVERSAL_BENCH_WITH_ROBUST_INDEX)
   #define FORALL_INDEXES(x) \
   x(gpu_masstree) x(gpu_chainhashtable) x(gpu_cuckoohashtable) x(gpu_linearhashtable)
+  #elif defined(UNIVERSAL_BENCH_WITH_GPU_BASELINE)
+  #define FORALL_INDEXES(x) \
+  x(gpu_blink_tree) x(gpu_dycuckoo)
   #endif
 
   #define INDEX_NAME_CHECK(index) (index_type == #index) ||

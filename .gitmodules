@@ -1,3 +1,6 @@
 [submodule "baselines/MVGpuBTree"]
 	path = baselines/MVGpuBTree
 	url = https://github.com/owensgroup/MVGpuBTree.git
+[submodule "baselines/DyCuckoo"]
+	path = baselines/DyCuckoo
+	url = https://github.com/zhuqiweigit/DyCuckoo.git

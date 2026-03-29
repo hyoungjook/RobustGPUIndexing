@@ -107,8 +107,8 @@ struct gpu_blink_tree_adapter {
       check_argument(keylen_max == 1);
     }
     void print() const {
-      std::cout << "  lookup-concurrent: " << lookup_concurrent << std::endl
-                << "  erase-concurrent: " << erase_concurrent << std::endl
+      std::cout << "    lookup-concurrent: " << lookup_concurrent << std::endl
+                << "    erase-concurrent: " << erase_concurrent << std::endl
                 ;
     }
   };

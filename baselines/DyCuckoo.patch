@@ -1,0 +1,57 @@
+diff --git a/dynamicHash/include/dynamic_helpers.cuh b/dynamicHash/include/dynamic_helpers.cuh
+index a35cdbf..3aef064 100644
+--- a/dynamicHash/include/dynamic_helpers.cuh
++++ b/dynamicHash/include/dynamic_helpers.cuh
+@@ -44,7 +44,7 @@ namespace cuckoo_helpers{
+         return 0;
+     }
+ 
+-    HOSTDEVICEQUALIFIER
++    HOSTDEVICEQUALIFIER INLINEQUALIFIER
+     bool isPrime(int num)
+     {
+         if (num == 2 || num == 3) return true;
+@@ -54,7 +54,7 @@ namespace cuckoo_helpers{
+         return true;
+     }
+ 
+-    HOSTDEVICEQUALIFIER
++    HOSTDEVICEQUALIFIER INLINEQUALIFIER
+     uint32_t nextPrime(uint32_t n)
+     {
+         bool state=isPrime(n);
+diff --git a/dynamicHash_lock/data/data_layout.cuh b/dynamicHash_lock/data/data_layout.cuh
+index 67ae991..8c44db2 100644
+--- a/dynamicHash_lock/data/data_layout.cuh
++++ b/dynamicHash_lock/data/data_layout.cuh
+@@ -8,7 +8,7 @@
+ template<
+         typename Key = uint32_t,
+         uint32_t KeyBits = 32,
+-        uint32_t ValBits = 128,
++        uint32_t ValBits = 32,
+         Key EmptyKey = 0,
+         uint32_t EmptyValue = 0,
+         uint32_t BucketSize = 16,
+diff --git a/dynamicHash_lock/include/dynamic_helpers.cuh b/dynamicHash_lock/include/dynamic_helpers.cuh
+index a35cdbf..3aef064 100644
+--- a/dynamicHash_lock/include/dynamic_helpers.cuh
++++ b/dynamicHash_lock/include/dynamic_helpers.cuh
+@@ -44,7 +44,7 @@ namespace cuckoo_helpers{
+         return 0;
+     }
+ 
+-    HOSTDEVICEQUALIFIER
++    HOSTDEVICEQUALIFIER INLINEQUALIFIER
+     bool isPrime(int num)
+     {
+         if (num == 2 || num == 3) return true;
+@@ -54,7 +54,7 @@ namespace cuckoo_helpers{
+         return true;
+     }
+ 
+-    HOSTDEVICEQUALIFIER
++    HOSTDEVICEQUALIFIER INLINEQUALIFIER
+     uint32_t nextPrime(uint32_t n)
+     {
+         bool state=isPrime(n);
