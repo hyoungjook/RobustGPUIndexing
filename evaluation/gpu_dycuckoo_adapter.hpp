@@ -42,15 +42,15 @@ struct gpu_dycuckoo_adapter {
       static_cast<float>(configs_.num_keys) / configs_.initial_array_fill_factor);
     if (configs_.use_lock) {
       index_ = gpu_dycuckoo_dynamic_lock_create(initial_capacity,
-                                                static_cast<int>(configs_.small_batch_size),
-                                                configs_.lower_bound,
-                                                configs_.upper_bound);
+                                                configs_.small_batch_size,
+                                                configs_.fill_factor_lower_bound,
+                                                configs_.fill_factor_upper_bound);
     }
     else {
       index_ = gpu_dycuckoo_dynamic_create(initial_capacity,
-                                           static_cast<int>(configs_.small_batch_size),
-                                           configs_.lower_bound,
-                                           configs_.upper_bound);
+                                           configs_.small_batch_size,
+                                           configs_.fill_factor_lower_bound,
+                                           configs_.fill_factor_upper_bound);
     }
   }
   void destroy() {
@@ -108,32 +108,31 @@ struct gpu_dycuckoo_adapter {
     bool use_lock;
     std::size_t num_keys;
     float initial_array_fill_factor;
-
-    double lower_bound;
-    double upper_bound;
-    uint32_t small_batch_size;
+    float fill_factor_lower_bound;
+    float fill_factor_upper_bound;
+    int small_batch_size;
     configs() {}
     configs(std::vector<std::string>& arguments) {
       use_lock = get_arg_value<bool>(arguments, "use-lock").value_or(false);
       num_keys = get_arg_value<std::size_t>(arguments, "num-keys").value_or(1000000);
       initial_array_fill_factor = get_arg_value<float>(arguments, "initial-array-fill-factor").value_or(0.8f);
+      fill_factor_lower_bound = get_arg_value<float>(arguments, "fill-factor-lower-bound").value_or(0.5f);
+      fill_factor_upper_bound = get_arg_value<float>(arguments, "fill-factor-upper-bound").value_or(0.8f);
+      small_batch_size = get_arg_value<int>(arguments, "small-batch-size").value_or(20000);
+      check_argument(0 < initial_array_fill_factor && initial_array_fill_factor <= 1.0f);
+      check_argument(0 < fill_factor_lower_bound &&
+                     fill_factor_lower_bound < fill_factor_upper_bound &&
+                     fill_factor_upper_bound <= 1.0f);
       uint32_t keylen_max = get_arg_value<uint32_t>(arguments, "keylen-max").value_or(1);
       check_argument(keylen_max == 1);
-      check_argument(0 < initial_array_fill_factor && initial_array_fill_factor <= 1.0);
-
-      lower_bound = get_arg_value<double>(arguments, "dycuckoo-lower-bound").value_or(0.5);
-      upper_bound = get_arg_value<double>(arguments, "dycuckoo-upper-bound").value_or(0.85);
-      small_batch_size = get_arg_value<uint32_t>(arguments, "dycuckoo-small-batch-size")
-                           .value_or(static_cast<uint32_t>(std::min<std::size_t>(
-                             num_keys, std::numeric_limits<uint32_t>::max()
-                           )));
-      check_argument(upper_bound <= 1.0);
-      check_argument(small_batch_size > 0);
     }
 
     void print() const {
       std::cout << "    use-lock: " << use_lock << std::endl
                 << "    initial-array-fill-factor: " << initial_array_fill_factor << std::endl
+                << "    fill-factor-lower-bound: " << fill_factor_lower_bound << std::endl
+                << "    fill-factor-upper-bound: " << fill_factor_upper_bound << std::endl
+                << "    small-batch-size: " << small_batch_size << std::endl
                 ;
     }
   };

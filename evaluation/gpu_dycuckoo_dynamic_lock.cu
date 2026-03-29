@@ -2,11 +2,22 @@
 #include <limits>
 #include <gpu_dycuckoo_backend.hpp>
 #include <macros.hpp>
+
+#define DataLayout DycuckooLockDataLayout
+#define DynamicHash DycuckooLockDynamicHash
+#define DynamicCuckoo DycuckooLockDynamicCuckoo
+#define cuckoo_helpers dycuckoo_lock_cuckoo_helpers
+#define hashers dycuckoo_lock_hashers
 #include "../baselines/DyCuckoo/dynamicHash_lock/core/dynamic_cuckoo.cuh"
+#undef hashers
+#undef cuckoo_helpers
+#undef DynamicCuckoo
+#undef DynamicHash
+#undef DataLayout
 
 namespace {
-using index_type = DynamicCuckoo<512, 512>;
-using value_type = DataLayout<>::value_t;
+using index_type = DycuckooLockDynamicCuckoo<512, 512>;
+using value_type = DycuckooLockDataLayout<>::value_t;
 }  // namespace
 
 extern "C" void* gpu_dycuckoo_dynamic_lock_create(uint32_t init_kv_num,
