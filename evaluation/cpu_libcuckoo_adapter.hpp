@@ -34,12 +34,21 @@ struct cpu_libcuckoo_adapter {
     size_type length;
   };
   struct key_hash {
+    static uint64_t mix64(uint64_t x) {
+      x ^= x >> 30;
+      x *= 0xbf58476d1ce4e5b9ULL;
+      x ^= x >> 27;
+      x *= 0x94d049bb133111ebULL;
+      x ^= x >> 31;
+      return x;
+    }
     std::size_t operator()(const key_type& key) const {
-      std::size_t hash = 0;
-      for (size_type i = 0; i < key.length; i++) {
-        hash ^= std::hash<key_slice_type>{}(key.data[i]) + 0x9e3779b9 + (hash << 6) + (hash >> 2);
+      uint64_t hash = 1469598103934665603ULL;
+      for (size_t i = 0; i < key.length; i++) {
+        hash ^= key.data[i];
+        hash *= 1099511628211ULL;
       }
-      return hash;
+      return static_cast<std::size_t>(mix64(hash ^ (static_cast<uint64_t>(key.length) << 32)));
     }
   };
   struct key_equal {

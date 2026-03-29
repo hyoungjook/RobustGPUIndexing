@@ -208,7 +208,7 @@ int main(int argc, char** argv) {
   std::vector<size_type> h_lookup_key_lengths;
   std::vector<key_slice_type> h_scan_upper_keys_if_btree;
   universal::generate_key_values(h_keys, h_key_lengths, h_values,
-                           num_keys, keylen_prefix, keylen_min, keylen_max, keylen_theta);
+                           num_keys, keylen_prefix, keylen_min, keylen_max, keylen_theta, false);
   std::size_t num_lookups_keys = std::max(
     (repeats_lookup > 0) ? num_lookups : 0,
     (repeats_scan > 0) ? num_scans : 0
@@ -216,7 +216,7 @@ int main(int argc, char** argv) {
   if (repeats_lookup > 0 || repeats_scan > 0) {
     universal::generate_lookup_keys(h_lookup_keys, h_lookup_key_lengths, h_keys, h_key_lengths,
                                     num_keys, keylen_prefix, keylen_min, keylen_max, keylen_theta,
-                                    num_lookups_keys, lookup_theta, lookup_exist_ratio);
+                                    num_lookups_keys, lookup_theta, lookup_exist_ratio, false);
   }
   if (index_type == "gpu_blink_tree" && repeats_scan > 0) {
     check_argument(keylen_max == 1);

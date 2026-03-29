@@ -88,7 +88,8 @@ void generate_key_values(std::vector<key_slice_type>& keys,
                          uint32_t keylen_prefix,
                          uint32_t keylen_min,
                          uint32_t keylen_max,
-                         double keylen_theta) {
+                         double keylen_theta,
+                         bool big_endian) {
   // key: [common prefix (keylen_prefix)], [random slices], [unique_id]
   // normally unique_id is 1 slice, but if num_keys exceeds uint32, should be 2 slices
   // also spare uint32_max to represent non-existing key
@@ -146,6 +147,13 @@ void generate_key_values(std::vector<key_slice_type>& keys,
             key[slice] = static_cast<key_slice_type>(unique_id_mix[key_idx]);
           }
         }
+        // big endian
+        if (big_endian) {
+          for (uint32_t slice = 0; slice < length; slice++) {
+            uint32_t key_slice = key[slice];
+            key[slice] = __builtin_bswap32(key_slice);
+          }
+        }
         // compute value
         values[key_idx] = key_hasher(key, length);
       }
@@ -167,7 +175,8 @@ void generate_lookup_keys(std::vector<key_slice_type>& lookup_keys,
                           double keylen_theta,
                           std::size_t num_queries,
                           double lookup_theta,
-                          double lookup_exist_ratio) {
+                          double lookup_exist_ratio,
+                          bool big_endian) {
   // randomly select lookup key from given keys
   // not-existing key is made with unique index num_keys
   check_argument(0.0 <= lookup_exist_ratio && lookup_exist_ratio <= 1.0);
@@ -217,6 +226,13 @@ void generate_lookup_keys(std::vector<key_slice_type>& lookup_keys,
             }
             else {
               lookup_key[slice] = static_cast<key_slice_type>(num_keys);
+            }
+          }
+          // big endian
+          if (big_endian) {
+            for (uint32_t slice = 0; slice < length; slice++) {
+              uint32_t key_slice = lookup_key[slice];
+              lookup_key[slice] = __builtin_bswap32(key_slice);
             }
           }
         }
