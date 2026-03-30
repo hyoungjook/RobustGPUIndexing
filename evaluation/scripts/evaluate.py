@@ -258,3 +258,19 @@ def read_configs_and_results(args):
         print(f'No valid json result file in {args.result_dir}')
         exit(1)
     return json_data
+
+def filter(configs_and_results: list[dict], desired_config: dict):
+    for config_and_result in configs_and_results:
+        config = config_and_result['config']
+        match = True
+        for desired_config_type, desired_config_value in desired_config.items():
+            if desired_config_type not in config:
+                match = False
+                break
+            if config[desired_config_type] != desired_config_value:
+                match = False
+                break
+        if match:
+            return config_and_result
+    # None found
+    return None
