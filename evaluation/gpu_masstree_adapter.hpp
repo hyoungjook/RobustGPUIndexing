@@ -128,22 +128,22 @@ struct gpu_masstree_adapter {
     bool reuse_root;
     configs() {}
     configs(std::vector<std::string>& arguments) {
-      allocator_pool_ratio = get_arg_value<float>(arguments, "allocator-pool-ratio").value_or(0.9f);
-      tile_size = get_arg_value<uint32_t>(arguments, "tile-size").value_or(32);
-      lookup_concurrent = get_arg_value<bool>(arguments, "lookup-concurrent").value_or(true);
-      enable_suffix = get_arg_value<bool>(arguments, "enable-suffix").value_or(true);
-      merge_level = get_arg_value<uint32_t>(arguments, "merge-level").value_or(3);
-      reuse_root = get_arg_value<bool>(arguments, "reuse-root").value_or(true);
+      allocator_pool_ratio = get_arg_value<float>(arguments, "allocator_pool_ratio").value_or(0.9f);
+      tile_size = get_arg_value<uint32_t>(arguments, "tile_size").value_or(32);
+      lookup_concurrent = get_arg_value<bool>(arguments, "lookup_concurrent").value_or(true);
+      enable_suffix = get_arg_value<bool>(arguments, "enable_suffix").value_or(true);
+      merge_level = get_arg_value<uint32_t>(arguments, "merge_level").value_or(3);
+      reuse_root = get_arg_value<bool>(arguments, "reuse_root").value_or(true);
       check_argument(tile_size == 32 || tile_size == 16);
       check_argument(merge_level <= 3);
     }
     void print() const {
-      std::cout << "    allocator-pool-ratio: " << allocator_pool_ratio << std::endl
-                << "    tile-size: " << tile_size << std::endl
-                << "    lookup-concurrent: " << lookup_concurrent << std::endl
-                << "    enable-suffix: " << enable_suffix << std::endl
-                << "    merge-level: " << merge_level << "(" << merge_level_strings[merge_level] << ")" << std::endl
-                << "    reuse-root: " << reuse_root << std::endl
+      std::cout << "    allocator_pool_ratio=" << allocator_pool_ratio << std::endl
+                << "    tile_size=" << tile_size << std::endl
+                << "    lookup_concurrent=" << lookup_concurrent << std::endl
+                << "    enable_suffix=" << enable_suffix << std::endl
+                << "    merge_level=" << merge_level << "(" << merge_level_strings[merge_level] << ")" << std::endl
+                << "    reuse_root=" << reuse_root << std::endl
                 ;
     }
   };

@@ -147,28 +147,10 @@ void run_bench(adapter_type& adapter,
 int main(int argc, char** argv) {
   auto arguments = std::vector<std::string>(argv, argv + argc);
   bool verbose = get_arg_value<bool>(arguments, "verbose").value_or(true);
-  // key distribution
-  std::size_t num_keys = get_arg_value<std::size_t>(arguments, "num-keys").value_or(1000000);
-  uint32_t keylen_prefix = get_arg_value<uint32_t>(arguments, "keylen-prefix").value_or(0);
-  uint32_t keylen_min = get_arg_value<uint32_t>(arguments, "keylen-min").value_or(1);
-  uint32_t keylen_max = get_arg_value<uint32_t>(arguments, "keylen-max").value_or(1);
-  double keylen_theta = get_arg_value<double>(arguments, "keylen-theta").value_or(0.0);
-  // delete config
-  double delete_ratio = get_arg_value<double>(arguments, "delete-ratio").value_or(0.1);
-  // lookup distribution
-  std::size_t num_lookups = get_arg_value<std::size_t>(arguments, "num-lookups").value_or(1000000);
-  double lookup_theta = get_arg_value<double>(arguments, "lookup-theta").value_or(0.0);
-  double lookup_exist_ratio = get_arg_value<double>(arguments, "lookup-exist-ratio").value_or(1.0);
-  // scan config
-  std::size_t num_scans = get_arg_value<std::size_t>(arguments, "num-scans").value_or(1000000);
-  uint32_t scan_count = get_arg_value<uint32_t>(arguments, "scan-count").value_or(1);
-  // repeats
-  std::size_t repeats_insert = get_arg_value<std::size_t>(arguments, "repeats-insert").value_or(10);
-  std::size_t repeats_delete = get_arg_value<std::size_t>(arguments, "repeats-delete").value_or(10);
-  std::size_t repeats_lookup = get_arg_value<std::size_t>(arguments, "repeats-lookup").value_or(10);
-  std::size_t repeats_scan = get_arg_value<std::size_t>(arguments, "repeats-scan").value_or(0);
-  // index config
-  std::string index_type = get_arg_value<std::string>(arguments, "index-type").value_or("cpu_libcuckoo");
+  #define PARSE_ARGUMENTS(arg, type, default_value) \
+  auto arg = get_arg_value<type>(arguments, #arg).value_or(default_value);
+  FORALL_ARGUMENTS(PARSE_ARGUMENTS)
+  #undef PARSE_ARGUMENTS
   check_argument(num_keys < std::numeric_limits<size_type>::max() &&
                  num_lookups < std::numeric_limits<size_type>::max() &&
                  num_scans < std::numeric_limits<size_type>::max());
@@ -192,24 +174,11 @@ int main(int argc, char** argv) {
   check_argument(0.0 < delete_ratio && delete_ratio <= 1.0);
   std::size_t num_deletes = static_cast<std::size_t>(delete_ratio * num_keys);
   if (verbose) {
-    std::cout << "arguments: " << std::endl
-              << "  num-keys: " << num_keys << std::endl
-              << "  keylen-prefix: " << keylen_prefix << std::endl
-              << "  keylen-min: " << keylen_min << std::endl
-              << "  keylen-max: " << keylen_max << std::endl
-              << "  keylen-theta: " << keylen_theta << std::endl
-              << "  delete-ratio: " << delete_ratio << std::endl
-              << "  num-lookups: " << num_lookups << std::endl
-              << "  lookup-theta: " << lookup_theta << std::endl
-              << "  lookup-exist-ratio: " << lookup_exist_ratio << std::endl
-              << "  num-scans: " << num_scans << std::endl
-              << "  scan-count: " << scan_count << std::endl
-              << "  repeats-insert: " << repeats_insert << std::endl
-              << "  repeats-delete: " << repeats_delete << std::endl
-              << "  repeats-lookup: " << repeats_lookup << std::endl
-              << "  repeats-scan: " << repeats_scan << std::endl
-              << "  index-type: " << index_type << std::endl
-              ;
+    std::cout << "arguments:" << std::endl;
+    #define PRINT_ARGUMENT(arg, type, default_value) \
+    std::cout << "  " #arg "=" << arg << std::endl;
+    FORALL_ARGUMENTS(PRINT_ARGUMENT)
+    #undef PRINT_ARGUMENT
     #define ADAPTER_PRINT_ARGS(index) \
     if (index_type == #index) { index##_adapter_.print_args(); }
     FORALL_INDEXES(ADAPTER_PRINT_ARGS)

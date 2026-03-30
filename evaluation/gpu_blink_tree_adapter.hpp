@@ -101,14 +101,14 @@ struct gpu_blink_tree_adapter {
     bool erase_concurrent;
     configs() {}
     configs(std::vector<std::string>& arguments) {
-      lookup_concurrent = get_arg_value<bool>(arguments, "lookup-concurrent").value_or(true);
-      erase_concurrent = get_arg_value<bool>(arguments, "erase-concurrent").value_or(true);
-      uint32_t keylen_max = get_arg_value<uint32_t>(arguments, "keylen-max").value_or(1);
+      lookup_concurrent = get_arg_value<bool>(arguments, "lookup_concurrent").value_or(true);
+      erase_concurrent = get_arg_value<bool>(arguments, "erase_concurrent").value_or(true);
+      uint32_t keylen_max = get_arg_value<uint32_t>(arguments, "keylen_max").value_or(1);
       check_argument(keylen_max == 1);
     }
     void print() const {
-      std::cout << "    lookup-concurrent: " << lookup_concurrent << std::endl
-                << "    erase-concurrent: " << erase_concurrent << std::endl
+      std::cout << "    lookup_concurrent=" << lookup_concurrent << std::endl
+                << "    erase_concurrent=" << erase_concurrent << std::endl
                 ;
     }
   };

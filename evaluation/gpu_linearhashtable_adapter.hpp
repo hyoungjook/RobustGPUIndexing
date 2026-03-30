@@ -125,29 +125,29 @@ struct gpu_linearhashtable_adapter {
     bool reuse_dirsize;
     configs() {}
     configs(std::vector<std::string>& arguments) {
-      allocator_pool_ratio = get_arg_value<float>(arguments, "allocator-pool-ratio").value_or(0.9f);
-      tile_size = get_arg_value<uint32_t>(arguments, "tile-size").value_or(32);
-      lookup_concurrent = get_arg_value<bool>(arguments, "lookup-concurrent").value_or(true);
-      initial_directory_size = get_arg_value<uint32_t>(arguments, "initial-directory-size").value_or(1024);
-      resize_policy = get_arg_value<float>(arguments, "resize-policy").value_or(2.0f);
-      load_factor_threshold = get_arg_value<float>(arguments, "load-factor-threshold").value_or(2.5f);
-      hash_tag_level = get_arg_value<uint32_t>(arguments, "hash-tag-level").value_or(2);
-      merge_level = get_arg_value<uint32_t>(arguments, "merge-level").value_or(2);
-      reuse_dirsize = get_arg_value<bool>(arguments, "reuse-dirsize").value_or(true);
+      allocator_pool_ratio = get_arg_value<float>(arguments, "allocator_pool_ratio").value_or(0.9f);
+      tile_size = get_arg_value<uint32_t>(arguments, "tile_size").value_or(32);
+      lookup_concurrent = get_arg_value<bool>(arguments, "lookup_concurrent").value_or(true);
+      initial_directory_size = get_arg_value<uint32_t>(arguments, "initial_directory_size").value_or(1024);
+      resize_policy = get_arg_value<float>(arguments, "resize_policy").value_or(2.0f);
+      load_factor_threshold = get_arg_value<float>(arguments, "load_factor_threshold").value_or(2.5f);
+      hash_tag_level = get_arg_value<uint32_t>(arguments, "hash_tag_level").value_or(2);
+      merge_level = get_arg_value<uint32_t>(arguments, "merge_level").value_or(2);
+      reuse_dirsize = get_arg_value<bool>(arguments, "reuse_dirsize").value_or(true);
       check_argument(tile_size == 32 || tile_size == 16);
       check_argument(0 < load_factor_threshold);
       check_argument(hash_tag_level <= 2);
     }
     void print() const {
-      std::cout << "    allocator-pool-ratio: " << allocator_pool_ratio << std::endl
-                << "    tile-size: " << tile_size << std::endl
-                << "    lookup-concurrent: " << lookup_concurrent << std::endl
-                << "    initial-directory_size: " << initial_directory_size << std::endl
-                << "    resize-policy: " << resize_policy << std::endl
-                << "    load-factor-threshold: " << load_factor_threshold << std::endl
-                << "    hash-tag-level: " << hash_tag_level << "(" << hash_tag_level_strings[hash_tag_level] << ")" << std::endl
-                << "    merge-level: " << merge_level << "(" << merge_level_strings[merge_level] << ")" << std::endl
-                << "    reuse-dirsize: " << reuse_dirsize<< std::endl
+      std::cout << "    allocator_pool_ratio=" << allocator_pool_ratio << std::endl
+                << "    tile_size=" << tile_size << std::endl
+                << "    lookup_concurrent=" << lookup_concurrent << std::endl
+                << "    initial_directory_size=" << initial_directory_size << std::endl
+                << "    resize_policy=" << resize_policy << std::endl
+                << "    load_factor_threshold=" << load_factor_threshold << std::endl
+                << "    hash_tag_level=" << hash_tag_level << "(" << hash_tag_level_strings[hash_tag_level] << ")" << std::endl
+                << "    merge_level=" << merge_level << "(" << merge_level_strings[merge_level] << ")" << std::endl
+                << "    reuse_dirsize=" << reuse_dirsize<< std::endl
                 ;
     }
   };

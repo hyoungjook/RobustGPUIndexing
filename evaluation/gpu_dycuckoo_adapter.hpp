@@ -110,10 +110,10 @@ struct gpu_dycuckoo_adapter {
     int small_batch_size;
     configs() {}
     configs(std::vector<std::string>& arguments) {
-      use_lock = get_arg_value<bool>(arguments, "use-lock").value_or(false);
-      initial_capacity = get_arg_value<uint32_t>(arguments, "initial-capacity").value_or(100000);
-      fill_factor_lower_bound = get_arg_value<float>(arguments, "fill-factor-lower-bound").value_or(0.5f);
-      fill_factor_upper_bound = get_arg_value<float>(arguments, "fill-factor-upper-bound").value_or(0.8f);
+      use_lock = get_arg_value<bool>(arguments, "use_lock").value_or(false);
+      initial_capacity = get_arg_value<uint32_t>(arguments, "initial_capacity").value_or(100000);
+      fill_factor_lower_bound = get_arg_value<float>(arguments, "fill_factor_lower_bound").value_or(0.5f);
+      fill_factor_upper_bound = get_arg_value<float>(arguments, "fill_factor_upper_bound").value_or(0.8f);
       small_batch_size = get_arg_value<int>(arguments, "small-batch-size").value_or(20000);
       check_argument(0 < initial_capacity);
       check_argument(0 < fill_factor_lower_bound &&
@@ -124,11 +124,11 @@ struct gpu_dycuckoo_adapter {
     }
 
     void print() const {
-      std::cout << "    use-lock: " << use_lock << std::endl
-                << "    initial-capacity: " << initial_capacity << std::endl
-                << "    fill-factor-lower-bound: " << fill_factor_lower_bound << std::endl
-                << "    fill-factor-upper-bound: " << fill_factor_upper_bound << std::endl
-                << "    small-batch-size: " << small_batch_size << std::endl
+      std::cout << "    use_lock=" << use_lock << std::endl
+                << "    initial_capacity=" << initial_capacity << std::endl
+                << "    fill_factor_lower_bound=" << fill_factor_lower_bound << std::endl
+                << "    fill_factor_upper_bound=" << fill_factor_upper_bound << std::endl
+                << "    small_batch_size=" << small_batch_size << std::endl
                 ;
     }
   };

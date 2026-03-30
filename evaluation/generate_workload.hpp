@@ -31,6 +31,30 @@ using key_slice_type = uint32_t;
 using value_type = uint32_t;
 using size_type = uint32_t;
 
+#define FORALL_ARGUMENTS(x) \
+  /* key distribution */ \
+  x(num_keys, std::size_t, 1000000) \
+  x(keylen_prefix, uint32_t, 0) \
+  x(keylen_min, uint32_t, 1) \
+  x(keylen_max, uint32_t, 1) \
+  x(keylen_theta, double, 0.0) \
+  /* delete config */ \
+  x(delete_ratio, double, 0.1) \
+  /* lookup distribution */ \
+  x(num_lookups, std::size_t, 1000000) \
+  x(lookup_theta, double, 0.0) \
+  x(lookup_exist_ratio, double, 1.0) \
+  /* scan config */ \
+  x(num_scans, std::size_t, 1000000) \
+  x(scan_count, uint32_t, 1) \
+  /* repeats */ \
+  x(repeats_insert, std::size_t, 10) \
+  x(repeats_delete, std::size_t, 10) \
+  x(repeats_lookup, std::size_t, 10) \
+  x(repeats_scan, std::size_t, 0) \
+  /* index config */ \
+  x(index_type, std::string, "gpu_masstree")
+
 namespace universal {
 
 template <typename T>

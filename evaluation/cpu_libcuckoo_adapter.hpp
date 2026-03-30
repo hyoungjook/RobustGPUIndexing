@@ -96,11 +96,11 @@ struct cpu_libcuckoo_adapter {
     std::size_t initial_capacity;
     configs() {}
     configs(std::vector<std::string>& arguments) {
-      initial_capacity = get_arg_value<float>(arguments, "initial-capacity").value_or(100000);
+      initial_capacity = get_arg_value<float>(arguments, "initial_capacity").value_or(100000);
       check_argument(0 < initial_capacity);
     }
     void print() const {
-      std::cout << "  initial-capacity: " << initial_capacity << std::endl;
+      std::cout << "  initial_capacity=" << initial_capacity << std::endl;
     }
   };
 
