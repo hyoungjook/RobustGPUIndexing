@@ -390,7 +390,11 @@ struct suffix_node_warp {
     auto suffix_index = get_next();
     while (num_nodes > 0) {
       auto* suffix_ptr = reinterpret_cast<elem_type*>(allocator_.address(suffix_index));
-      auto next_index = utils::memory::load<elem_type, false>(suffix_ptr + next_lane_);
+      elem_type next_index;
+      if (tile_.thread_rank() == 0) {
+        next_index = utils::memory::load<elem_type, false>(suffix_ptr + next_lane_);
+      }
+      next_index = tile_.shfl(next_index, 0);
       reclaimer.retire(suffix_index, tile_);
       suffix_index = next_index;
       num_nodes--;

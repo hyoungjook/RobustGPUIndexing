@@ -29,7 +29,7 @@
 //#define RECLAIMER_DEBUG
 #endif
 
-template <uint32_t buffer_size_per_block = 32768>
+template <uint32_t buffer_size_per_block = 131072>
 struct simple_debra_reclaimer {
   using size_type = uint32_t;
   using pointer_type = size_type;
@@ -230,6 +230,7 @@ private:
         epoch_advanced = true;
       }
     }
+    cur_epoch = tile.shfl(cur_epoch, 0);
     return tile.shfl(epoch_advanced, 0);
   }
 
@@ -239,6 +240,14 @@ private:
     uint32_t cur_bag = current_bag();
     cur_bag = (cur_bag + 1) % num_bags_;
     auto total_count = count_per_bag()[cur_bag];
+    tile.sync();
+    if (total_count == 0) {
+      if (tile.thread_rank() == 0) {
+        current_bag() = cur_bag;
+      }
+      tile.sync();
+      return;
+    }
     #ifdef RECLAIMER_DEBUG
     if (tile.thread_rank() == 0) {
       atomicAdd(&reclaimer_.stats_->num_deallocates, total_count);
@@ -262,7 +271,7 @@ private:
         dealloc_sum += allocator.deallocate_perlane(address);
       }
     }
-    allocator.deallocate_perlane_finish_sync(dealloc_sum, tile);
+    allocator.deallocate_perlane_finish(dealloc_sum, tile);
     // reset the counter
     if (tile.thread_rank() == 0) {
       count_per_bag()[cur_bag] = 0;

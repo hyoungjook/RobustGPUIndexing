@@ -168,8 +168,7 @@ int main(int argc, char** argv) {
   uint32_t max_key_length = get_arg_value<uint32_t>(arguments, "max-key-length").value_or(1u);
   float common_prefix_ratio = get_arg_value<float>(arguments, "common-prefix-ratio").value_or(0.1f);
   float erase_ratio = get_arg_value<float>(arguments, "erase-ratio").value_or(0.1f);
-  float chain_allocator_pool_ratio = get_arg_value<float>(arguments, "chain-allocator-pool-ratio").value_or(0.5f);
-  float cuckoo_allocator_pool_ratio = get_arg_value<float>(arguments, "cuckoo-allocator-pool-ratio").value_or(0.1f);
+  float allocator_pool_ratio = get_arg_value<float>(arguments, "chain-allocator-pool-ratio").value_or(0.5f);
   bool validate_result   = get_arg_value<bool>(arguments, "validate-result").value_or(false);
   bool validate_index   = get_arg_value<bool>(arguments, "validate-index").value_or(false);
   bool verbose   = get_arg_value<bool>(arguments, "verbose").value_or(false);
@@ -293,25 +292,25 @@ int main(int argc, char** argv) {
   bench_hashtable<chainhashtable_tile32_type>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, num_experiments, erase_ratio, chain_array_factor,
-    chain_allocator_pool_ratio, validate_result, validate_index, verbose
+    allocator_pool_ratio, validate_result, validate_index, verbose
   );
   std::cout << "Benchmarking chainhashtable_tile16_type" << std::endl;
   bench_hashtable<chainhashtable_tile16_type>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, num_experiments, erase_ratio, chain_array_factor,
-    chain_allocator_pool_ratio, validate_result, validate_index, verbose
+    allocator_pool_ratio, validate_result, validate_index, verbose
   );
   std::cout << "Benchmarking cuckoohashtable_tile32_type" << std::endl;
   bench_hashtable<cuckoohashtable_tile32_type>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, num_experiments, erase_ratio, cuckoo_fill_factor,
-    cuckoo_allocator_pool_ratio, validate_result, validate_index, verbose
+    allocator_pool_ratio, validate_result, validate_index, verbose
   );
   std::cout << "Benchmarking cuckoohashtable_tile16_type" << std::endl;
   bench_hashtable<cuckoohashtable_tile16_type>(
     d_keys, d_lengths, d_values, d_find_keys, d_find_lengths, d_results,
     num_keys, max_key_length, num_experiments, erase_ratio, cuckoo_fill_factor,
-    cuckoo_allocator_pool_ratio, validate_result, validate_index, verbose
+    allocator_pool_ratio, validate_result, validate_index, verbose
   );
   
 }

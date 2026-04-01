@@ -492,7 +492,11 @@ struct suffix_node_subwarp {
     auto suffix_index = get_next();
     while (num_nodes > 0) {
       auto* suffix_ptr = reinterpret_cast<slice_type*>(allocator_.address(suffix_index));
-      auto next_index = utils::memory::load<size_type, false>(suffix_ptr + (2 * next_lane_ + 1));
+      size_type next_index;
+      if (tile_.thread_rank() == 0) {
+        next_index = utils::memory::load<size_type, false>(suffix_ptr + (2 * next_lane_ + 1));
+      }
+      next_index = tile_.shfl(next_index, 0);
       reclaimer.retire(suffix_index, tile_);
       suffix_index = next_index;
       num_nodes--;

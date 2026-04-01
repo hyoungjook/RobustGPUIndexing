@@ -115,8 +115,7 @@ int main(int argc, char** argv) {
   if (find_ratio < 0.f) {
     std::cerr << "insert-ratio " << insert_ratio << " + erase_ratio " << erase_ratio << " > 1" << std::endl;
   }
-  float chain_allocator_pool_ratio = get_arg_value<float>(arguments, "chain-allocator-pool-ratio").value_or(0.5f);
-  float cuckoo_allocator_pool_ratio = get_arg_value<float>(arguments, "cuckoo-allocator-pool-ratio").value_or(0.1f);
+  float allocator_pool_ratio = get_arg_value<float>(arguments, "chain-allocator-pool-ratio").value_or(0.5f);
   bool verbose   = get_arg_value<bool>(arguments, "verbose").value_or(false);
   std::string dataset_file = get_arg_value<std::string>(arguments, "dataset-file").value_or("");
   std::size_t num_experiments = get_arg_value<std::size_t>(arguments, "num-experiments").value_or(1llu);
@@ -301,25 +300,25 @@ int main(int argc, char** argv) {
   mix_bench_hashtable<chainhashtable_tile32_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
-    max_key_length, total_num_inserts, chain_array_factor, num_experiments, chain_allocator_pool_ratio, verbose
+    max_key_length, total_num_inserts, chain_array_factor, num_experiments, allocator_pool_ratio, verbose
   );
   std::cout << "Benchmarking chainhashtable_tile16_type" << std::endl;
   mix_bench_hashtable<chainhashtable_tile16_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
-    max_key_length, total_num_inserts, chain_array_factor, num_experiments, chain_allocator_pool_ratio, verbose
+    max_key_length, total_num_inserts, chain_array_factor, num_experiments, allocator_pool_ratio, verbose
   );
   std::cout << "Benchmarking cuckoohashtable_tile32_type" << std::endl;
   mix_bench_hashtable<cuckoohashtable_tile32_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
-    max_key_length, total_num_inserts, cuckoo_fill_factor, num_experiments, cuckoo_allocator_pool_ratio, verbose
+    max_key_length, total_num_inserts, cuckoo_fill_factor, num_experiments, allocator_pool_ratio, verbose
   );
   std::cout << "Benchmarking cuckoohashtable_tile16_type" << std::endl;
   mix_bench_hashtable<cuckoohashtable_tile16_type>(
     d_keys, d_lengths, d_values, half_num_keys,
     d_mix_types, d_mix_keys, d_mix_lengths, d_mix_values, half_num_keys,
-    max_key_length, total_num_inserts, cuckoo_fill_factor, num_experiments, cuckoo_allocator_pool_ratio, verbose
+    max_key_length, total_num_inserts, cuckoo_fill_factor, num_experiments, allocator_pool_ratio, verbose
   );
   
 }

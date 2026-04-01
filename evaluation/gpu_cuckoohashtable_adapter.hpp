@@ -106,7 +106,7 @@ struct gpu_cuckoohashtable_adapter {
 
  private:
   #define FORALL_ARGUMENTS_GPU_CUCKOOHASHTABLE(x) \
-    x(allocator_pool_ratio, float, 0.1f) \
+    x(allocator_pool_ratio, float, 0.5f) \
     x(tile_size, uint32_t, 32) \
     x(lookup_concurrent, bool, true) \
     x(initial_array_fill_factor, float, 0.8f) \

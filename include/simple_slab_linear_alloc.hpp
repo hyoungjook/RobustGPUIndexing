@@ -190,7 +190,7 @@ struct device_allocator_context<simple_slab_linear_allocator<slab_size>> {
     return (utils::finalize(p) % check_load_factor_every_ == 0) ? 1 : 0;
   }
   template <typename tile_type>
-  DEVICE_QUALIFIER void deallocate_perlane_finish_sync(uint32_t sum, const tile_type& tile) {
+  DEVICE_QUALIFIER void deallocate_perlane_finish(uint32_t sum, const tile_type& tile) {
     sum = cooperative_groups::reduce(tile, sum, cooperative_groups::plus<uint32_t>());
     if (tile.thread_rank() == 0) {
       cuda::atomic_ref<size_type, cuda::thread_scope_device> num_slabs_ref(alloc_.counts_->num_slabs_);
@@ -319,6 +319,7 @@ private:
         reinterpret_cast<bitmap_type*>(bitmap_base) + bitmap_index;
     bitmap_type mask = static_cast<bitmap_type>(1) << bit_index;
     cuda::atomic_ref<bitmap_type, cuda::thread_scope_device> bitmap_ref(*bitmap_addr);
-    bitmap_ref.fetch_and(~mask, cuda::memory_order_relaxed);
+    [[maybe_unused]] auto old = bitmap_ref.fetch_and(~mask, cuda::memory_order_relaxed);
+    assert((old & mask) != 0);  // double free
   }
 };
