@@ -25,7 +25,7 @@ INDEX_STYLES = {
     IndexType.cpu_art: {"color": "#5C4D7D", "marker": "P"},
     IndexType.cpu_masstree: {"color": "#6C9A8B", "marker": "X"},
     IndexType.cpu_libcuckoo: {"color": "#9C6644", "marker": "v"},
-    IndexType_gpu_masstree_no_suffix: {"color": "#0B6E4F", "marker": "*"},
+    IndexType_gpu_masstree_no_suffix: {"color": "#549A84", "marker": "*"},
 }
 
 def _table_size_label(value, _):
@@ -165,32 +165,36 @@ def key_length_plots(configs_and_results, plot_file):
                 result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
                 prefix_lookup_tputs[index_type].append(float(result['lookup']))
     # plot
-    fig, axes = plt.subplots(1, 2, figsize=(6, 2), constrained_layout=True)
+    fig, axes = plt.subplots(1, 2, figsize=(6, 2.3), constrained_layout=True)
     legend_handles = []
     legend_labels = []
+    def convert_mops_to_gops(values):
+        return [v / 1000 for v in values]
     for index_type in all_index_types + [IndexType_gpu_masstree_no_suffix]:
         line, = axes[0].plot(
             key_lengths_xdata,
-            no_prefix_lookup_tputs[index_type],
+            convert_mops_to_gops(no_prefix_lookup_tputs[index_type]),
             label=INDEX_LABELS[index_type],
             linewidth=2,
             markersize=6,
             **INDEX_STYLES[index_type]
         )
+        axes[0].set_title("Keys Without Common Prefix")
         axes[0].set_xlabel("Key Length")
         legend_handles.append(line)
         legend_labels.append(INDEX_LABELS[index_type])
     for index_type in all_index_types + [IndexType_gpu_masstree_no_suffix]:
         axes[1].plot(
             key_lengths_xdata,
-            prefix_lookup_tputs[index_type],
+            convert_mops_to_gops(prefix_lookup_tputs[index_type]),
             label=INDEX_LABELS[index_type],
             linewidth=2,
             markersize=6,
             **INDEX_STYLES[index_type]
         )
-        axes[1].set_xlabel("Prefix / Key Length")
-    axes[0].set_ylabel("Throughput (Mop/s)")
+        axes[1].set_title("Keys With Common Prefix")
+        axes[1].set_xlabel("Key Length")
+    axes[0].set_ylabel("Throughput (Gop/s)")
     fig.legend(
         legend_handles,
         legend_labels,
