@@ -24,18 +24,18 @@ INDEX_LABELS = {
     IndexType_gpu_dycuckoo_with_lock: "GPUDyCuckoo (with lock)"
 }
 INDEX_STYLES = {
-    IndexType.gpu_masstree: {"color": "#0B6E4F", "marker": "o"},
-    IndexType.gpu_chainhashtable: {"color": "#D1495B", "marker": "s"},
-    IndexType.gpu_cuckoohashtable: {"color": "#00798C", "marker": "^"},
-    IndexType.gpu_extendhashtable: {"color": "#EDAE49", "marker": "D"},
-    IndexType.gpu_blink_tree: {"color": "#8F2D56", "marker": "<"},
-    IndexType.gpu_dycuckoo: {"color": "#3B60E4", "marker": "h"},
-    IndexType.cpu_art: {"color": "#5C4D7D", "marker": "P"},
-    IndexType.cpu_masstree: {"color": "#6C9A8B", "marker": "X"},
-    IndexType.cpu_libcuckoo: {"color": "#9C6644", "marker": "v"},
-    IndexType_gpu_masstree_no_suffix: {"color": "#549A84", "marker": "*"},
-    IndexType_gpu_extendht_no_hashtag: {"color": "#CE973E", "marker": "d"},
-    IndexType_gpu_dycuckoo_with_lock: {"color": "#7993EF", "marker": "H"},
+    IndexType.gpu_masstree: {"color": "#0B6E4F", "marker": "o", "linestyle": "-"},
+    IndexType.gpu_chainhashtable: {"color": "#D1495B", "marker": "s", "linestyle": "-"},
+    IndexType.gpu_cuckoohashtable: {"color": "#00798C", "marker": "^", "linestyle": "-"},
+    IndexType.gpu_extendhashtable: {"color": "#EDAE49", "marker": "D", "linestyle": "-"},
+    IndexType.gpu_blink_tree: {"color": "#8F2D56", "marker": "<", "linestyle": ":"},
+    IndexType.gpu_dycuckoo: {"color": "#3B60E4", "marker": "h", "linestyle": ":"},
+    IndexType.cpu_art: {"color": "#5C4D7D", "marker": "P", "linestyle": ":"},
+    IndexType.cpu_masstree: {"color": "#6C9A8B", "marker": "X", "linestyle": ":"},
+    IndexType.cpu_libcuckoo: {"color": "#9C6644", "marker": "v", "linestyle": ":"},
+    IndexType_gpu_masstree_no_suffix: {"color": "#549A84", "marker": "*", "linestyle": "-"},
+    IndexType_gpu_extendht_no_hashtag: {"color": "#CE973E", "marker": "d", "linestyle": "-"},
+    IndexType_gpu_dycuckoo_with_lock: {"color": "#7993EF", "marker": "H", "linestyle": ":"},
 }
 
 def _table_size_label(value, _):
@@ -226,6 +226,7 @@ def key_length_plots(configs_and_results, plot_file):
         )
         axes[0].set_title("Keys Without Common Prefix")
         axes[0].set_xlabel("Key Length")
+        axes[0].grid(True, which="major", linestyle="--", linewidth=0.6, alpha=0.5)
         legend_handles.append(line)
         legend_labels.append(INDEX_LABELS[index_type])
     for index_type in all_index_types + [IndexType_gpu_masstree_no_suffix, IndexType_gpu_extendht_no_hashtag]:
@@ -241,6 +242,7 @@ def key_length_plots(configs_and_results, plot_file):
         )
         axes[1].set_title("Keys With Common Prefix")
         axes[1].set_xlabel("Key Length")
+        axes[1].grid(True, which="major", linestyle="--", linewidth=0.6, alpha=0.5)
     axes[0].set_ylabel("Throughput (Gop/s)")
     fig.legend(
         legend_handles,
