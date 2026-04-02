@@ -55,4 +55,4 @@ def generate_configs():
 if __name__ == "__main__":
     args = parse_args_for_measure()
     configs = generate_configs()
-    run_all_and_add_to_json(args, configs, "result_cpu")
+    run_all_and_add_to_json(args, configs, "result_cpu", 0)

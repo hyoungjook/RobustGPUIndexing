@@ -69,10 +69,14 @@ def table_size_plots(configs_and_results, plot_file):
                 ConfigType.delete_ratio: DEFAULT_DELETE_RATIO,
                 ConfigType.num_lookups: DEFAULT_NUM_KEYS
             }
+            if index_type in INDEX_TYPES_ROBUST:
+                desired_config[OptionalConfigType.tile_size] = 16
             result = filter(configs_and_results, desired_config, ConfigType.repeats_insert)
             insert_tputs[index_type].append(float(result['insert']))
             result = filter(configs_and_results, desired_config, ConfigType.repeats_delete)
             delete_tputs[index_type].append(float(result['delete']))
+            if index_type in INDEX_TYPES_ROBUST:
+                desired_config[OptionalConfigType.lookup_concurrent] = 0
             result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
             lookup_tputs[index_type].append(float(result['lookup']))
     for index_type in scan_index_types:
@@ -87,6 +91,9 @@ def table_size_plots(configs_and_results, plot_file):
                 ConfigType.num_scans: DEFAULT_NUM_KEYS,
                 ConfigType.scan_count: DEFAULT_SCAN_COUNT
             }
+            if index_type in INDEX_TYPES_ROBUST:
+                desired_config[OptionalConfigType.tile_size] = 16
+                desired_config[OptionalConfigType.lookup_concurrent] = 0
             result = filter(configs_and_results, desired_config, ConfigType.repeats_scan)
             scan_tputs[index_type].append(float(result['scan']))
     # plot
@@ -151,6 +158,9 @@ def key_length_plots(configs_and_results, plot_file):
                 ConfigType.keylen_max: key_length,
                 ConfigType.num_lookups: DEFAULT_NUM_KEYS
             }
+            if index_type in INDEX_TYPES_ROBUST:
+                desired_config[OptionalConfigType.tile_size] = 16
+                desired_config[OptionalConfigType.lookup_concurrent] = 0
             if index_type == IndexType.gpu_masstree:
                 desired_config[OptionalConfigType.enable_suffix] = 1
                 result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
@@ -177,6 +187,9 @@ def key_length_plots(configs_and_results, plot_file):
                 ConfigType.keylen_max: key_length,
                 ConfigType.num_lookups: DEFAULT_NUM_KEYS
             }
+            if index_type in INDEX_TYPES_ROBUST:
+                desired_config[OptionalConfigType.tile_size] = 16
+                desired_config[OptionalConfigType.lookup_concurrent] = 0
             if index_type == IndexType.gpu_masstree:
                 desired_config[OptionalConfigType.enable_suffix] = 1
                 result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
@@ -256,12 +269,16 @@ def single_slice_plots(configs_and_results, plot_file):
             ConfigType.delete_ratio: DEFAULT_DELETE_RATIO,
             ConfigType.num_lookups: DEFAULT_NUM_KEYS
         }
+        if index_type in INDEX_TYPES_ROBUST:
+            desired_config[OptionalConfigType.tile_size] = 16
         if index_type == IndexType.gpu_dycuckoo:
             desired_config[OptionalConfigType.use_lock] = 0
         result = filter(configs_and_results, desired_config, ConfigType.repeats_insert)
         insert_tputs.append(float(result['insert']))
         result = filter(configs_and_results, desired_config, ConfigType.repeats_delete)
         delete_tputs.append(float(result['delete']))
+        if index_type in INDEX_TYPES_ROBUST + [IndexType.gpu_blink_tree]:
+                desired_config[OptionalConfigType.lookup_concurrent] = 0
         result = filter(configs_and_results, desired_config, ConfigType.repeats_lookup)
         lookup_tputs.append(float(result['lookup']))
         if index_type == IndexType.gpu_dycuckoo:
@@ -282,6 +299,10 @@ def single_slice_plots(configs_and_results, plot_file):
             ConfigType.num_scans: DEFAULT_NUM_KEYS,
             ConfigType.scan_count: DEFAULT_SCAN_COUNT
         }
+        if index_type in INDEX_TYPES_ROBUST:
+            desired_config[OptionalConfigType.tile_size] = 16
+        if index_type in INDEX_TYPES_ROBUST + [IndexType.gpu_blink_tree]:
+            desired_config[OptionalConfigType.lookup_concurrent] = 0
         result = filter(configs_and_results, desired_config, ConfigType.repeats_scan)
         scan_tputs.append(float(result['scan']))
     # plot

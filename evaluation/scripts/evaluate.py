@@ -216,11 +216,13 @@ def run_one(args, config):
     print(f'parsed_config: {parsed_config}, result: {result}')
     return parsed_config, result
 
-def run_all_and_add_to_json(args, configs, result_file_name):
+def run_all_and_add_to_json(args, configs, result_file_name, start_from):
     # run all
     os.makedirs(args.result_dir, exist_ok=True)
     result_file = Path(args.result_dir) / f'{result_file_name}.json'
-    for config in configs:
+    for idx in range(start_from, len(configs)):
+        print(f'Experiment {idx} (total {len(configs)})')
+        config = configs[idx]
         parsed_config, result = run_one(args, config)
         for config_type, config_value in config.items():
             assert config_type.name in parsed_config and \
