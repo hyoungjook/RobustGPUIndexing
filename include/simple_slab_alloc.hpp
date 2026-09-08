@@ -56,16 +56,10 @@ struct simple_slab_allocator {
   simple_slab_allocator(float pool_ratio = 0.9f) {
     auto meminfo = utils::compute_device_memory_usage();
     auto max_bytes = static_cast<std::size_t>(static_cast<double>(meminfo.total_bytes) * pool_ratio);
-    total_blocks_ = static_cast<pointer_type>(max_bytes / block_size_);
-    if (static_cast<std::size_t>(total_blocks_) * num_slabs_in_block_ >= std::numeric_limits<pointer_type>::max()) {
-      std::cerr << "simple_slab_allocator: pointer exceeds uint32 limit" << std::endl;
-      abort();
-    }
-    auto total_bytes = static_cast<std::size_t>(total_blocks_) * block_size_;
-    auto total_bitmap_bytes = (static_cast<std::size_t>(total_blocks_) * num_slabs_in_block_) / 8;
-    cuda_try(cudaMalloc(&pool_, total_bitmap_bytes + total_bytes));
-    cuda_try(cudaMemset(pool_, 0x00, total_bitmap_bytes));
-    pool_ = reinterpret_cast<void*>(reinterpret_cast<uint8_t*>(pool_) + total_bitmap_bytes);
+    allocate_pool(max_bytes);
+  }
+  explicit simple_slab_allocator(std::size_t pool_bytes) {
+    allocate_pool(pool_bytes);
   }
   ~simple_slab_allocator() {
     auto total_bitmap_bytes = (static_cast<std::size_t>(total_blocks_) * num_slabs_in_block_) / 8;
@@ -89,6 +83,23 @@ struct simple_slab_allocator {
   }
 
 private:
+  void allocate_pool(std::size_t max_bytes) {
+    auto total_blocks = max_bytes / block_size_;
+    if (total_blocks == 0) {
+      std::cerr << "simple_slab_allocator: pool must hold at least one block" << std::endl;
+      abort();
+    }
+    if (total_blocks > std::numeric_limits<pointer_type>::max() / num_slabs_in_block_) {
+      std::cerr << "simple_slab_allocator: pointer exceeds uint32 limit" << std::endl;
+      abort();
+    }
+    total_blocks_ = static_cast<pointer_type>(total_blocks);
+    auto total_bytes = static_cast<std::size_t>(total_blocks_) * block_size_;
+    auto total_bitmap_bytes = (static_cast<std::size_t>(total_blocks_) * num_slabs_in_block_) / 8;
+    cuda_try(cudaMalloc(&pool_, total_bitmap_bytes + total_bytes));
+    cuda_try(cudaMemset(pool_, 0x00, total_bitmap_bytes));
+    pool_ = reinterpret_cast<void*>(reinterpret_cast<uint8_t*>(pool_) + total_bitmap_bytes);
+  }
   void* pool_;
   pointer_type total_blocks_;
 };
@@ -111,11 +122,17 @@ struct device_allocator_context<simple_slab_allocator<slab_size>> {
   DEVICE_QUALIFIER pointer_type allocate(const tile_type& tile) {
     pointer_type slab_index = try_allocate_in_block(block_index_, tile);
     if (slab_index == invalid_pointer) {
-      uint32_t trials = 0;
-      while (slab_index == invalid_pointer) {
-        trials++;
+      uint32_t trials = 1;
+      while (slab_index == invalid_pointer && trials < alloc_.total_blocks_) {
         block_index_ = next_index(block_index_, trials);
         slab_index = try_allocate_in_block(block_index_, tile);
+        trials++;
+      }
+      if (slab_index == invalid_pointer) {
+        if (tile.thread_rank() == 0) {
+          printf("simple_slab_allocator: pool exhausted\n");
+        }
+        __trap();
       }
     }
     return (block_index_ * num_slabs_in_block_) + slab_index;
